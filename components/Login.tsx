@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { User } from '../types';
 import { checkUserStatus, loginWithPassword, registerClientPassword, verifyAdminLogin, getRotationalTestPassword } from '../services/clientService';
-import { Loader2, Lock, AlertCircle, UserCheck, Shield, Sparkles, Play, ChevronRight, Star } from 'lucide-react';
+import { Loader2, Lock, AlertCircle, UserCheck, Shield, Sparkles, Play, ChevronRight, Star, ArrowRight } from 'lucide-react';
 
 interface LoginProps {
   onLogin: (user: User, remember: boolean, isTest?: boolean) => void;
@@ -53,12 +53,16 @@ const THEMES: Theme[] = [
 ];
 
 const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSuccess }) => {
-  const [step, setStep] = useState<'identify' | 'password' | 'create_password'>('identify');
+  const [step, setStep] = useState<'identify' | 'select_account' | 'password' | 'create_password'>('identify');
   
   // User Login State
   const [digits, setDigits] = useState('');
   const [fullPhoneFound, setFullPhoneFound] = useState('');
   const [foundProfile, setFoundProfile] = useState<{name?: string, photo?: string} | null>(null);
+  
+  // Multiple Matches State
+  const [multipleMatches, setMultipleMatches] = useState<{ phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }[]>([]);
+
   const [password, setPassword] = useState('');
   const [showAdmin, setShowAdmin] = useState(false);
   
@@ -99,20 +103,23 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
     try {
         const status = await checkUserStatus(digits);
 
-        if (status.exists && status.phoneMatches.length > 0) {
-            setFullPhoneFound(status.phoneMatches[0]);
+        if (status.exists && status.matches.length > 0) {
             
-            // Set profile data if available
-            if (status.profile) {
-                setFoundProfile(status.profile);
+            if (status.matches.length > 1) {
+                // MÚLTIPLAS CONTAS ENCONTRADAS
+                setMultipleMatches(status.matches);
+                setStep('select_account');
             } else {
-                setFoundProfile(null);
-            }
+                // APENAS UMA CONTA (Fluxo Padrão)
+                const match = status.matches[0];
+                setFullPhoneFound(match.phoneNumber);
+                setFoundProfile({ name: match.name, photo: match.photo });
 
-            if (status.hasPassword) {
-                setStep('password');
-            } else {
-                setStep('create_password');
+                if (match.hasPassword) {
+                    setStep('password');
+                } else {
+                    setStep('create_password');
+                }
             }
         } else {
             setError('Conta não encontrada.');
@@ -122,6 +129,22 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
     } finally {
         setLoading(false);
     }
+  };
+
+  const handleSelectAccount = (match: { phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }) => {
+      setFullPhoneFound(match.phoneNumber);
+      setFoundProfile({ name: match.name, photo: match.photo });
+      
+      // Reseta senha ao trocar seleção
+      setPassword('');
+      setError('');
+
+      // Envia para criar ou digitar senha com base no status dessa conta específica
+      if (match.hasPassword) {
+          setStep('password');
+      } else {
+          setStep('create_password');
+      }
   };
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
@@ -192,6 +215,15 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
       }
   };
 
+  const formatPhoneNumber = (phone: string) => {
+      // Formato Simples para Exibição: (XX) XXXXX-XXXX
+      const cleaned = phone.replace(/\D/g, '');
+      if (cleaned.length === 11) {
+          return `(${cleaned.slice(0, 2)}) ${cleaned.slice(2, 7)}-${cleaned.slice(7)}`;
+      }
+      return phone;
+  };
+
   // --- RENDERIZAR TELA DE ADMIN ---
   if (showAdmin) {
       return (
@@ -246,7 +278,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
             </p>
         </div>
 
-        {step === 'identify' ? (
+        {step === 'identify' && (
             <form onSubmit={handleIdentify} className="space-y-6">
                 
                 <div className="space-y-4">
@@ -302,7 +334,57 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
                 </div>
 
             </form>
-        ) : (
+        )}
+
+        {step === 'select_account' && (
+            <div className="space-y-6 animate-slide-up">
+                <div className="text-center">
+                    <h3 className={`text-lg font-bold ${theme.textClass}`}>Encontramos mais de um!</h3>
+                    <p className={`text-sm opacity-80 ${theme.textClass}`}>
+                        Qual destes números é o seu?
+                    </p>
+                </div>
+
+                <div className="space-y-3 max-h-60 overflow-y-auto pr-1 custom-scrollbar">
+                    {multipleMatches.map((match, idx) => (
+                        <button
+                            key={idx}
+                            onClick={() => handleSelectAccount(match)}
+                            className={`w-full p-4 rounded-xl text-left border transition-all active:scale-95 hover:shadow-md flex items-center justify-between group ${theme.inputContainerClass}`}
+                        >
+                            <div className="flex items-center gap-3">
+                                {match.photo ? (
+                                    <img src={match.photo} alt="User" className="w-10 h-10 rounded-full object-cover border border-gray-200" />
+                                ) : (
+                                    <div className={`w-10 h-10 rounded-full flex items-center justify-center bg-pink-100 text-pink-600`}>
+                                        <UserCheck className="w-5 h-5" />
+                                    </div>
+                                )}
+                                <div>
+                                    <p className={`font-bold font-mono text-sm ${theme.inputTextClass}`}>
+                                        {formatPhoneNumber(match.phoneNumber)}
+                                    </p>
+                                    <p className="text-[10px] text-gray-500 font-bold uppercase">
+                                        {match.name || 'Cliente'}
+                                    </p>
+                                </div>
+                            </div>
+                            <ArrowRight className="w-5 h-5 text-gray-400 group-hover:text-pink-500 transition-colors" />
+                        </button>
+                    ))}
+                </div>
+
+                <button 
+                    type="button" 
+                    onClick={() => { setStep('identify'); setDigits(''); setError(''); setMultipleMatches([]); }}
+                    className={`w-full font-bold text-xs py-3 rounded-xl transition-all hover:bg-gray-100 ${theme.subTextClass}`}
+                >
+                    Voltar / Nenhum destes
+                </button>
+            </div>
+        )}
+
+        {(step === 'password' || step === 'create_password') && (
             // PASSWORD STEP
             <form onSubmit={step === 'password' ? handleLoginSubmit : handleRegisterPassword} className="space-y-6 animate-slide-up">
                 
@@ -362,7 +444,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
                     
                     <button 
                         type="button" 
-                        onClick={() => { setStep('identify'); setDigits(''); setPassword(''); setError(''); setFoundProfile(null); }}
+                        onClick={() => { setStep('identify'); setDigits(''); setPassword(''); setError(''); setFoundProfile(null); setMultipleMatches([]); }}
                         className={`font-bold text-xs py-2 transition-colors hover:underline opacity-70 hover:opacity-100 ${theme.subTextClass}`}
                     >
                         Não sou este número

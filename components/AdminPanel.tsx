@@ -1,9 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
-import { AppCredential, ClientDBRow } from '../types';
-import { fetchCredentials, saveCredential, deleteCredential, getUsersCountForCredential, getClientsAssignedToCredential } from '../services/credentialService';
-import { getAllClients, saveClientToDB, deleteClientFromDB, resetAllClientPasswords, verifyAdminLogin, getTestUser, createDemoClient, getSystemConfig, saveSystemConfig, SystemConfig, getRotationalTestPassword } from '../services/clientService';
-import { Plus, Trash2, Edit2, LogOut, Eye, Users, Save, RefreshCw, Search, AlertTriangle, X, Check, DollarSign, ShieldAlert, TestTube, Unlock, Ban, Calendar, User as UserIcon, Sparkles, Megaphone, Clock, ArrowDownUp, Filter, ChevronDown, ChevronUp, Layers, ArrowUpAZ, Loader2 } from 'lucide-react';
+import { AppCredential, ClientDBRow, User } from '../types';
+import { fetchCredentials, saveCredential, deleteCredential, getUsersCountForCredential, getClientsAssignedToCredential, getAssignedCredential } from '../services/credentialService';
+import { getAllClients, saveClientToDB, deleteClientFromDB, resetAllClientPasswords, verifyAdminLogin, getSystemConfig, saveSystemConfig, SystemConfig, getRotationalTestPassword, processUserLogin, supabase, createDemoClient } from '../services/clientService';
+import { Plus, Trash2, Edit2, LogOut, Eye, Users, Save, RefreshCw, Search, AlertTriangle, X, Check, ShieldAlert, TestTube, Unlock, Ban, Calendar, User as UserIcon, Sparkles, Clock, ArrowDownUp, ChevronDown, ChevronUp, Layers, ArrowUpAZ, Loader2, Key, Smartphone, AtSign, UserCheck, UserMinus } from 'lucide-react';
 
 interface AdminPanelProps {
   onLogout: () => void;
@@ -26,14 +26,14 @@ const toISO = (localString: string) => {
 };
 
 const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'credentials' | 'clients' | 'test' | 'danger'>('credentials');
+  const [activeTab, setActiveTab] = useState<'credentials' | 'clients' | 'search' | 'test' | 'danger'>('credentials');
   
   const [credentials, setCredentials] = useState<AppCredential[]>([]);
   const [counts, setCounts] = useState<{[key: string]: number}>({});
   const [activeCredsCount, setActiveCredsCount] = useState<{[key: string]: number}>({});
   const [clients, setClients] = useState<ClientDBRow[]>([]);
   const [clientSearch, setClientSearch] = useState('');
-  const [clientSortAlpha, setClientSortAlpha] = useState(false); // State for Alphabetical Sort
+  const [clientSortAlpha, setClientSortAlpha] = useState(false); // State for Alphabetical Sort/Group
   
   const [sysConfig, setSysConfig] = useState<SystemConfig>({
       bannerText: '', bannerType: 'info', bannerActive: false, 
@@ -45,6 +45,13 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [testUserId, setTestUserId] = useState<string | null>(null);
   const [currentTestPass, setCurrentTestPass] = useState('');
   const [manualTestPass, setManualTestPass] = useState('');
+
+  // SEARCH TAB STATE
+  const [searchTabQuery, setSearchTabQuery] = useState('');
+  const [searchTabResults, setSearchTabResults] = useState<ClientDBRow[]>([]);
+  const [selectedSearchClient, setSelectedSearchClient] = useState<User | null>(null);
+  const [revealedLogins, setRevealedLogins] = useState<Record<string, {email: string, pass: string}>>({});
+  const [searchingLogins, setSearchingLogins] = useState(false);
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [stats, setStats] = useState({ totalClients: 0, activeClients: 0, totalRevenue: 0, expiringSoon: 0, debtors: 0 });
@@ -74,6 +81,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [service, setService] = useState(SERVICES[0]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [credDate, setCredDate] = useState(''); // New state for Date Editing
   const [bulkText, setBulkText] = useState(''); 
   
   const [clientForm, setClientForm] = useState<Partial<ClientDBRow>>({
@@ -84,7 +92,29 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     loadData();
     setCurrentTestPass(getRotationalTestPassword());
     const interval = setInterval(() => setCurrentTestPass(getRotationalTestPassword()), 60000);
-    return () => clearInterval(interval);
+    
+    // Realtime básico apenas para manter a lista atualizada com inserções/edições
+    const channel = supabase
+        .channel('admin-clients-changes')
+        .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'clients' },
+            (payload) => {
+                if (payload.eventType === 'INSERT') {
+                    setClients(prev => [payload.new as ClientDBRow, ...prev]);
+                } else if (payload.eventType === 'UPDATE') {
+                    setClients(prev => prev.map(c => c.id === payload.new.id ? payload.new as ClientDBRow : c));
+                } else if (payload.eventType === 'DELETE') {
+                    setClients(prev => prev.filter(c => c.id !== payload.old.id));
+                }
+            }
+        )
+        .subscribe();
+
+    return () => {
+        clearInterval(interval);
+        supabase.removeChannel(channel);
+    };
   }, []);
 
   const loadData = async () => {
@@ -159,8 +189,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const handleSaveCredential = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    // Automatic Date (Now)
-    let pubDate = new Date().toISOString(); 
+    
+    // Determine Date: Use manual input if available, otherwise current time
+    let pubDate = credDate ? toISO(credDate) : new Date().toISOString(); 
     
     if (isBulkMode) {
         const lines = bulkText.split('\n');
@@ -169,7 +200,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
              const parts = line.split(/[:|;\s]+/).filter(p => p.trim() !== '');
              if (parts.length >= 2) {
                  await saveCredential({
-                     id: '', service, email: parts[0], password: parts[1], publishedAt: pubDate, isVisible: true
+                     id: '', service, email: parts[0], password: parts[1], publishedAt: new Date().toISOString(), isVisible: true
                  });
              }
         }
@@ -242,7 +273,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     setService(cred.service);
     setEmail(cred.email);
     setPassword(cred.password);
-    // Date is kept as is in DB, but on update it will refresh to NOW if saved again as "new" logic implies in prompt 8
+    setCredDate(toLocalInput(cred.publishedAt));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -252,6 +283,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     setEditId(null);
     setEmail('');
     setPassword('');
+    setCredDate('');
     setBulkText('');
   };
 
@@ -368,16 +400,22 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       return acc;
   }, {});
 
-  // SORTED KEYS based on Client Name
-  const clientKeys = Object.keys(groupedClients).sort((a, b) => {
-      if (!clientSortAlpha) return 0; // Default order (usually insertion/phone)
-      
-      const clientA = groupedClients[a][0];
-      const clientB = groupedClients[b][0];
-      
-      const nameA = clientA?.client_name || '';
-      const nameB = clientB?.client_name || '';
-      
+  // PREPARE LISTS (Default / Named / Unnamed)
+  const defaultKeys = Object.keys(groupedClients); // Usually insertion order
+  const namedClientsKeys: string[] = [];
+  const unnamedClientsKeys: string[] = [];
+
+  defaultKeys.forEach(phone => {
+      const clientList = groupedClients[phone];
+      const hasName = clientList[0]?.client_name && clientList[0].client_name.trim() !== '';
+      if (hasName) namedClientsKeys.push(phone);
+      else unnamedClientsKeys.push(phone);
+  });
+
+  // Sort named alphabetically
+  namedClientsKeys.sort((a, b) => {
+      const nameA = groupedClients[a][0].client_name || '';
+      const nameB = groupedClients[b][0].client_name || '';
       return nameA.localeCompare(nameB);
   });
 
@@ -412,6 +450,139 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       setNuclearLoading(false);
   };
 
+  // --- SEARCH TAB LOGIC ---
+  const handleExecuteSearch = () => {
+      if (!searchTabQuery) return;
+      setSelectedSearchClient(null); // Reset selection
+      setRevealedLogins({});
+      
+      // Filter clients that match the query
+      // REGRA DE DIFERENCIAÇÃO: Se os 4 últimos forem iguais, mas o número completo for diferente, eles aparecem como itens distintos.
+      const matched = clients.filter(c => 
+          !c.deleted && c.phone_number.includes(searchTabQuery)
+      );
+      
+      setSearchTabResults(matched);
+  };
+
+  const handleSelectSearchClient = async (dbRow: ClientDBRow) => {
+      setSearchingLogins(true);
+      // Create User Object for the helper function (uses logic from clientService to process subscription strings)
+      const { user } = processUserLogin([dbRow]);
+      setSelectedSearchClient(user);
+      
+      // Calculate credentials for each service
+      if (user) {
+          const newRevealed: Record<string, {email: string, pass: string}> = {};
+          for (const service of user.services) {
+              // Get the clean service name (without dates)
+              const cleanName = service.split('|')[0].trim();
+              // IMPORTANT: Pass 'clients' to reuse the loaded list and ensure correct index calculation
+              const { credential } = await getAssignedCredential(user, cleanName, clients);
+              if (credential) {
+                  newRevealed[cleanName] = { email: credential.email, pass: credential.password };
+              } else {
+                  newRevealed[cleanName] = { email: 'Não encontrado', pass: '---' };
+              }
+          }
+          setRevealedLogins(newRevealed);
+      }
+      setSearchingLogins(false);
+  };
+
+  // --- RENDER HELPER FOR CLIENT CARD ---
+  const renderClientCard = (phone: string) => {
+      const clientList = groupedClients[phone];
+      const displayName = Array.from(new Set(clientList.map(c => c.client_name).filter(Boolean))).join(' / ') || 'Sem Nome';
+      const totalApps = clientList.reduce((acc, curr) => acc + (Array.isArray(curr.subscriptions) ? curr.subscriptions.length : 0), 0);
+      const isExpanded = expandedPhones.has(phone);
+      const anyDebtor = clientList.some(c => c.is_debtor);
+      const mainPassword = clientList.find(c => c.client_password)?.client_password || 'Sem senha';
+
+      return (
+          <div key={phone} className={`rounded-xl border transition-all overflow-hidden ${anyDebtor ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-white shadow-sm'}`}>
+              {/* HEADER CARD - Clickable */}
+              <div 
+                  className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50/80 transition-colors"
+                  onClick={() => togglePhoneExpand(phone)}
+              >
+                  <div className="flex items-center gap-4">
+                      <div className={`p-3 rounded-full relative ${anyDebtor ? 'bg-red-100 text-red-600' : 'bg-primary-50 text-primary-600'}`}>
+                          {anyDebtor ? <AlertTriangle className="w-6 h-6" /> : <UserIcon className="w-6 h-6" />}
+                      </div>
+                      <div>
+                          <div className="flex items-center gap-2">
+                              <h4 className="text-lg font-bold text-gray-900 font-mono tracking-tight">{phone}</h4>
+                          </div>
+                          <p className="text-sm text-gray-500 font-medium">{displayName}</p>
+                      </div>
+                  </div>
+
+                  <div className="flex items-center gap-6">
+                      <div className="hidden md:flex flex-col items-end">
+                          <span className="text-xs font-bold uppercase text-gray-400">Total</span>
+                          <span className="text-sm font-bold text-gray-800 flex items-center gap-1">
+                              <Layers className="w-4 h-4" /> {totalApps} Assinatura(s)
+                          </span>
+                      </div>
+                      <div className="hidden md:flex flex-col items-end">
+                          <span className="text-xs font-bold uppercase text-gray-400">Senha</span>
+                          <span className="text-sm font-mono font-bold text-gray-800">{mainPassword}</span>
+                      </div>
+                      {isExpanded ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+                  </div>
+              </div>
+
+              {/* EXPANDED DETAILS */}
+              {isExpanded && (
+                  <div className="bg-gray-50 border-t border-gray-200 p-2 overflow-x-auto">
+                      <table className="w-full text-sm text-left min-w-[500px]">
+                          <thead className="text-xs text-gray-400 uppercase font-bold">
+                              <tr>
+                                  <th className="p-3 pl-4">Apps</th>
+                                  <th className="p-3">Data Compra</th>
+                                  <th className="p-3">Plano</th>
+                                  <th className="p-3 text-right">Ações</th>
+                              </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-200">
+                              {clientList.map(client => (
+                                  <tr key={client.id} className="hover:bg-gray-100/50 transition-colors">
+                                      <td className="p-3 pl-4">
+                                          <div className="flex flex-wrap gap-1">
+                                              {(Array.isArray(client.subscriptions) ? client.subscriptions : []).map(s => (
+                                                  <span key={s} className="bg-white border border-gray-200 text-gray-700 px-2 py-1 rounded text-xs font-bold uppercase shadow-sm">
+                                                      {s.split('|')[0]}
+                                                  </span>
+                                              ))}
+                                          </div>
+                                      </td>
+                                      <td className="p-3 font-mono text-gray-600">
+                                          {new Date(client.purchase_date).toLocaleDateString('pt-BR')}
+                                      </td>
+                                      <td className="p-3">
+                                          <span className="text-xs font-bold bg-gray-200 text-gray-700 px-2 py-1 rounded">
+                                              {client.duration_months} Mês(es)
+                                          </span>
+                                          {client.is_debtor && <span className="ml-2 text-xs font-bold bg-red-100 text-red-600 px-2 py-1 rounded">Bloqueado</span>}
+                                          {client.override_expiration && <span className="ml-2 text-xs font-bold bg-yellow-100 text-yellow-700 px-2 py-1 rounded">Liberado</span>}
+                                      </td>
+                                      <td className="p-3 text-right">
+                                          <div className="flex justify-end gap-1">
+                                              <button onClick={() => handleQuickToggleOverride(client)} className={`p-1.5 rounded hover:bg-gray-200 ${client.override_expiration ? 'text-yellow-600' : 'text-gray-400'}`} title="Liberar Acesso Vencido"><Unlock className="w-4 h-4" /></button>
+                                              <button onClick={() => handleOpenClientModal(client)} className="p-1.5 rounded hover:bg-blue-100 text-blue-600"><Edit2 className="w-4 h-4" /></button>
+                                          </div>
+                                      </td>
+                                  </tr>
+                              ))}
+                          </tbody>
+                      </table>
+                  </div>
+              )}
+          </div>
+      );
+  };
+
   return (
     <div className="min-h-screen bg-gray-100 p-4 md:p-6 pb-24 font-sans">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -431,6 +602,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         <div className="flex bg-white p-1.5 rounded-2xl shadow-sm w-full md:w-auto self-start overflow-x-auto">
              <button onClick={() => setActiveTab('credentials')} className={`flex-1 md:flex-none px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'credentials' ? 'bg-primary-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}>Credenciais</button>
              <button onClick={() => setActiveTab('clients')} className={`flex-1 md:flex-none px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'clients' ? 'bg-primary-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}>Clientes</button>
+             <button onClick={() => setActiveTab('search')} className={`flex-1 md:flex-none px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'search' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}>Pesquisar Logins</button>
              <button onClick={() => setActiveTab('test')} className={`flex-1 md:flex-none px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'test' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}>Teste Grátis</button>
              <button onClick={() => setActiveTab('danger')} className={`flex-1 md:flex-none px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'danger' ? 'bg-red-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}>Danger</button>
         </div>
@@ -438,7 +610,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         {/* TAB 1: CREDENTIALS */}
         {activeTab === 'credentials' && (
              <div>
-                 {/* Input Form - DATE REMOVED */}
+                 {/* Input Form */}
                  <div className="bg-white p-6 rounded-2xl shadow-sm border-2 border-primary-100 mb-6">
                     <div className="flex justify-between items-center mb-4">
                         <h3 className="font-bold text-gray-800 flex items-center">{isEditing ? <Edit2 className="w-5 h-5 mr-2 text-primary-600" /> : <Plus className="w-5 h-5 mr-2 text-primary-600" />}{isEditing ? 'Editar Credencial' : 'Adicionar Nova Conta'}</h3>
@@ -454,11 +626,21 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                 <select className="bg-gray-50 border-0 rounded-xl p-3 font-bold text-gray-700 md:col-span-2" value={service} onChange={e => setService(e.target.value)}>{SERVICES.map(s => <option key={s} value={s}>{s}</option>)}</select>
                                 <input type="email" placeholder="Email da Conta" className="bg-gray-50 border-0 rounded-xl p-3" value={email} onChange={e => setEmail(e.target.value)} />
                                 <input type="text" placeholder="Senha" className="bg-gray-50 border-0 rounded-xl p-3" value={password} onChange={e => setPassword(e.target.value)} />
+                                <div className="md:col-span-2">
+                                    <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Data de Criação (Opcional)</label>
+                                    <input 
+                                        type="datetime-local" 
+                                        className="w-full bg-gray-50 border-0 rounded-xl p-3 text-gray-600 font-mono text-sm" 
+                                        value={credDate} 
+                                        onChange={e => setCredDate(e.target.value)} 
+                                    />
+                                    <p className="text-[10px] text-gray-400 mt-1">Deixe em branco para usar a data/hora atual.</p>
+                                </div>
                             </div>
                         ) : (
                             <div className="space-y-2"><select className="w-full bg-gray-50 border-0 rounded-xl p-3 font-bold text-gray-700 mb-2" value={service} onChange={e => setService(e.target.value)}>{SERVICES.map(s => <option key={s} value={s}>{s}</option>)}</select><textarea className="w-full h-32 bg-gray-50 border-0 rounded-xl p-3 font-mono text-xs" placeholder={`email1@exemplo.com:senha1\nemail2@exemplo.com senha2`} value={bulkText} onChange={e => setBulkText(e.target.value)} /><p className="text-[10px] text-gray-400">Formato: email:senha (uma por linha)</p></div>
                         )}
-                        <button disabled={loading} className="w-full bg-primary-600 text-white font-bold py-3 rounded-xl hover:bg-primary-700 flex justify-center items-center shadow-lg shadow-primary-200 transition-transform active:scale-95">{loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <><Save className="w-5 h-5 mr-2" /> Salvar (Horário Atual)</>}</button>
+                        <button disabled={loading} className="w-full bg-primary-600 text-white font-bold py-3 rounded-xl hover:bg-primary-700 flex justify-center items-center shadow-lg shadow-primary-200 transition-transform active:scale-95">{loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <><Save className="w-5 h-5 mr-2" /> Salvar Credencial</>}</button>
                     </form>
                  </div>
 
@@ -518,105 +700,150 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 </div>
                 
                 <div className="space-y-4">
-                    {clientKeys.length === 0 && <p className="text-center text-gray-400 py-10">Nenhum cliente encontrado.</p>}
+                    {defaultKeys.length === 0 && <p className="text-center text-gray-400 py-10">Nenhum cliente encontrado.</p>}
                     
-                    {clientKeys.map((phone) => {
-                        const clientList = groupedClients[phone];
-                        // Main info derived from the first (most recent) record or aggregated
-                        const mainRecord = clientList[0];
-                        const allNames = Array.from(new Set(clientList.map(c => c.client_name).filter(Boolean)));
-                        const displayName = allNames.length > 0 ? allNames.join(' / ') : 'Sem Nome';
-                        const totalApps = clientList.reduce((acc, curr) => acc + (Array.isArray(curr.subscriptions) ? curr.subscriptions.length : 0), 0);
-                        const isExpanded = expandedPhones.has(phone);
-                        
-                        // Check if ANY record has a block/debt
-                        const anyDebtor = clientList.some(c => c.is_debtor);
-                        const anyOverride = clientList.some(c => c.override_expiration);
-                        const mainPassword = clientList.find(c => c.client_password)?.client_password || 'Sem senha';
+                    {clientSortAlpha ? (
+                        <>
+                            {/* GRUPO: COM NOME */}
+                            <div className="flex items-center gap-2 mb-4 mt-2 px-1">
+                                <div className="bg-green-100 p-2 rounded-full"><UserCheck className="w-5 h-5 text-green-600" /></div>
+                                <h3 className="font-bold text-gray-700 text-lg">Clientes Identificados ({namedClientsKeys.length})</h3>
+                            </div>
+                            <div className="space-y-4 mb-8">
+                                {namedClientsKeys.map(phone => renderClientCard(phone))}
+                                {namedClientsKeys.length === 0 && <p className="text-gray-400 text-sm ml-10">Nenhum cliente com nome definido.</p>}
+                            </div>
 
-                        return (
-                            <div key={phone} className={`rounded-xl border transition-all overflow-hidden ${anyDebtor ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-white shadow-sm'}`}>
-                                {/* HEADER CARD - Clickable */}
-                                <div 
-                                    className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50/80 transition-colors"
-                                    onClick={() => togglePhoneExpand(phone)}
-                                >
-                                    <div className="flex items-center gap-4">
-                                        <div className={`p-3 rounded-full ${anyDebtor ? 'bg-red-100 text-red-600' : 'bg-primary-50 text-primary-600'}`}>
-                                            {anyDebtor ? <AlertTriangle className="w-6 h-6" /> : <UserIcon className="w-6 h-6" />}
-                                        </div>
-                                        <div>
-                                            <h4 className="text-lg font-bold text-gray-900 font-mono tracking-tight">{phone}</h4>
-                                            <p className="text-sm text-gray-500 font-medium">{displayName}</p>
-                                        </div>
+                            {/* GRUPO: SEM NOME */}
+                            <div className="flex items-center gap-2 mb-4 mt-8 border-t pt-6 px-1 border-gray-200">
+                                <div className="bg-gray-100 p-2 rounded-full"><UserMinus className="w-5 h-5 text-gray-500" /></div>
+                                <h3 className="font-bold text-gray-700 text-lg">Sem Nome ({unnamedClientsKeys.length})</h3>
+                            </div>
+                            <div className="space-y-4">
+                                {unnamedClientsKeys.map(phone => renderClientCard(phone))}
+                                {unnamedClientsKeys.length === 0 && <p className="text-gray-400 text-sm ml-10">Todos os clientes possuem nome.</p>}
+                            </div>
+                        </>
+                    ) : (
+                        // LISTA PADRÃO (Misturada/Inserção)
+                        defaultKeys.map(phone => renderClientCard(phone))
+                    )}
+                </div>
+            </div>
+        )}
+
+        {/* TAB 3: SEARCH LOGINS (NEW) */}
+        {activeTab === 'search' && (
+            <div className="space-y-6">
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100">
+                    <div className="flex flex-col md:flex-row items-center gap-4">
+                        <div className="flex-1 w-full relative">
+                            <input 
+                                type="text" 
+                                placeholder="Digite o número (Ex: 1234 ou 11999991234)"
+                                className="w-full p-4 pl-12 rounded-xl bg-gray-50 border-2 border-gray-100 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none text-lg font-mono font-bold text-gray-700 transition-all"
+                                value={searchTabQuery}
+                                onChange={(e) => setSearchTabQuery(e.target.value.replace(/\D/g, ''))}
+                                onKeyDown={(e) => e.key === 'Enter' && handleExecuteSearch()}
+                            />
+                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
+                        </div>
+                        <button 
+                            onClick={handleExecuteSearch}
+                            className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-xl font-bold shadow-lg shadow-blue-200 transition-transform active:scale-95 w-full md:w-auto"
+                        >
+                            Buscar Login
+                        </button>
+                    </div>
+                </div>
+
+                {/* RESULTS LIST */}
+                {!selectedSearchClient && searchTabResults.length > 0 && (
+                    <div className="space-y-3">
+                        <p className="text-gray-500 font-bold text-sm px-2">Encontramos {searchTabResults.length} resultado(s):</p>
+                        {searchTabResults.map((client) => (
+                            <div key={client.id} onClick={() => handleSelectSearchClient(client)} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 hover:border-blue-400 hover:shadow-md cursor-pointer transition-all flex justify-between items-center group">
+                                <div className="flex items-center gap-4">
+                                    <div className="bg-blue-50 p-3 rounded-full group-hover:bg-blue-100 transition-colors">
+                                        <Smartphone className="w-6 h-6 text-blue-600" />
                                     </div>
-
-                                    <div className="flex items-center gap-6">
-                                        <div className="hidden md:flex flex-col items-end">
-                                            <span className="text-xs font-bold uppercase text-gray-400">Total</span>
-                                            <span className="text-sm font-bold text-gray-800 flex items-center gap-1">
-                                                <Layers className="w-4 h-4" /> {totalApps} Assinatura(s)
-                                            </span>
-                                        </div>
-                                        <div className="hidden md:flex flex-col items-end">
-                                            <span className="text-xs font-bold uppercase text-gray-400">Senha</span>
-                                            <span className="text-sm font-mono font-bold text-gray-800">{mainPassword}</span>
-                                        </div>
-                                        {isExpanded ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+                                    <div>
+                                        <h3 className="text-lg font-bold text-gray-900 font-mono">{client.phone_number}</h3>
+                                        <p className="text-sm text-gray-500">{client.client_name || 'Sem nome'} • {Array.isArray(client.subscriptions) ? client.subscriptions.length : 0} Assinaturas</p>
                                     </div>
                                 </div>
-
-                                {/* EXPANDED DETAILS - List of Subscriptions (SCROLLABLE FIX) */}
-                                {isExpanded && (
-                                    <div className="bg-gray-50 border-t border-gray-200 p-2 overflow-x-auto">
-                                        <table className="w-full text-sm text-left min-w-[500px]">
-                                            <thead className="text-xs text-gray-400 uppercase font-bold">
-                                                <tr>
-                                                    <th className="p-3 pl-4">Apps</th>
-                                                    <th className="p-3">Data Compra</th>
-                                                    <th className="p-3">Plano</th>
-                                                    <th className="p-3 text-right">Ações</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-200">
-                                                {clientList.map(client => (
-                                                    <tr key={client.id} className="hover:bg-gray-100/50 transition-colors">
-                                                        <td className="p-3 pl-4">
-                                                            <div className="flex flex-wrap gap-1">
-                                                                {(Array.isArray(client.subscriptions) ? client.subscriptions : []).map(s => (
-                                                                    <span key={s} className="bg-white border border-gray-200 text-gray-700 px-2 py-1 rounded text-xs font-bold uppercase shadow-sm">
-                                                                        {s.split('|')[0]}
-                                                                    </span>
-                                                                ))}
-                                                            </div>
-                                                        </td>
-                                                        <td className="p-3 font-mono text-gray-600">
-                                                            {new Date(client.purchase_date).toLocaleDateString('pt-BR')}
-                                                        </td>
-                                                        <td className="p-3">
-                                                            <span className="text-xs font-bold bg-gray-200 text-gray-700 px-2 py-1 rounded">
-                                                                {client.duration_months} Mês(es)
-                                                            </span>
-                                                            {client.is_debtor && <span className="ml-2 text-xs font-bold bg-red-100 text-red-600 px-2 py-1 rounded">Bloqueado</span>}
-                                                            {client.override_expiration && <span className="ml-2 text-xs font-bold bg-yellow-100 text-yellow-700 px-2 py-1 rounded">Liberado</span>}
-                                                        </td>
-                                                        <td className="p-3 text-right">
-                                                            <div className="flex justify-end gap-1">
-                                                                <button onClick={() => handleQuickToggleOverride(client)} className={`p-1.5 rounded hover:bg-gray-200 ${client.override_expiration ? 'text-yellow-600' : 'text-gray-400'}`} title="Liberar Acesso Vencido"><Unlock className="w-4 h-4" /></button>
-                                                                <button onClick={() => handleOpenClientModal(client)} className="p-1.5 rounded hover:bg-blue-100 text-blue-600"><Edit2 className="w-4 h-4" /></button>
-                                                                <button onClick={() => setDeleteModal({open: true, type: 'client', id: client.id})} className="p-1.5 rounded hover:bg-red-100 text-red-600"><Trash2 className="w-4 h-4" /></button>
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                )}
+                                <ArrowDownUp className="w-5 h-5 text-gray-300 group-hover:text-blue-500 -rotate-90" />
                             </div>
-                        );
-                    })}
-                </div>
+                        ))}
+                    </div>
+                )}
+
+                {!selectedSearchClient && searchTabResults.length === 0 && searchTabQuery && (
+                    <div className="text-center py-10 text-gray-400">
+                        Nenhum cliente encontrado com "{searchTabQuery}"
+                    </div>
+                )}
+
+                {/* SELECTED CLIENT DETAILS */}
+                {selectedSearchClient && (
+                    <div className="bg-white rounded-3xl shadow-xl overflow-hidden border-2 border-blue-50 animate-fade-in-up">
+                        <div className="bg-blue-600 p-6 text-white flex justify-between items-center">
+                            <div>
+                                <h2 className="text-2xl font-black">{selectedSearchClient.name}</h2>
+                                <p className="font-mono opacity-80 text-lg">{selectedSearchClient.phoneNumber}</p>
+                            </div>
+                            <button onClick={() => setSelectedSearchClient(null)} className="bg-white/20 hover:bg-white/30 p-2 rounded-full transition-colors">
+                                <X className="w-6 h-6" />
+                            </button>
+                        </div>
+                        
+                        <div className="p-6">
+                            <h3 className="font-bold text-gray-700 mb-4 flex items-center"><Key className="w-5 h-5 mr-2 text-blue-500"/> Logins Atribuídos (Calculados Agora)</h3>
+                            
+                            {searchingLogins ? (
+                                <div className="py-10 text-center text-gray-400 flex flex-col items-center">
+                                    <Loader2 className="w-8 h-8 animate-spin mb-2" /> Calculando credenciais...
+                                </div>
+                            ) : (
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    {selectedSearchClient.services.map(svc => {
+                                        const cleanName = svc.split('|')[0].trim();
+                                        const loginData = revealedLogins[cleanName];
+                                        
+                                        return (
+                                            <div key={svc} className="border border-gray-200 rounded-2xl p-4 bg-gray-50 hover:bg-white transition-colors hover:shadow-md">
+                                                <div className="flex justify-between items-start mb-3">
+                                                    <span className="font-bold text-gray-800 text-lg">{cleanName}</span>
+                                                    <span className={`text-[10px] font-bold px-2 py-1 rounded ${selectedSearchClient.isDebtor ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
+                                                        {selectedSearchClient.isDebtor ? 'BLOQUEADO' : 'ATIVO'}
+                                                    </span>
+                                                </div>
+                                                
+                                                {loginData ? (
+                                                    <div className="space-y-2 bg-white p-3 rounded-xl border border-gray-100">
+                                                        <div className="flex items-center gap-2">
+                                                            <AtSign className="w-4 h-4 text-gray-400" />
+                                                            <span className="font-mono text-sm font-bold text-blue-900 select-all">{loginData.email}</span>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <Key className="w-4 h-4 text-gray-400" />
+                                                            <span className="font-mono text-sm font-bold text-blue-900 select-all">{loginData.pass}</span>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-xs text-gray-400 italic">Sem login atribuído</span>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                    {selectedSearchClient.services.length === 0 && (
+                                        <p className="text-gray-400 col-span-2 text-center py-4">Nenhuma assinatura ativa neste cliente.</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
         )}
 
@@ -704,6 +931,68 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         <div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center"><Clock className="w-3 h-3 mr-1" /> Data Início (Geral)</label><input type="datetime-local" className="w-full bg-gray-50 text-gray-900 border-0 rounded-xl p-3.5 font-mono text-sm" value={clientForm.purchase_date} onChange={e => setClientForm({...clientForm, purchase_date: e.target.value})} /></div><div><label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center"><Calendar className="w-3 h-3 mr-1" /> Plano (Duração)</label><select className="w-full bg-gray-50 text-gray-900 border-0 rounded-xl p-3.5 focus:ring-2 focus:ring-primary-500 font-bold" value={clientForm.duration_months} onChange={e => setClientForm({...clientForm, duration_months: parseInt(e.target.value)})}> <option value={1}>1 Mês (Mensal)</option> <option value={2}>2 Meses</option> <option value={3}>3 Meses (Trimestral)</option> <option value={6}>6 Meses (Semestral)</option> <option value={12}>1 Ano (Anual)</option> <option value={999}>Vitalício / Demo</option> </select></div></div>
                         <div className="space-y-3"><div className="flex items-center gap-3 p-4 bg-red-50 rounded-xl border border-red-100 cursor-pointer hover:bg-red-100 transition-colors" onClick={() => setClientForm({...clientForm, is_debtor: !clientForm.is_debtor})}><div className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${clientForm.is_debtor ? 'bg-red-600 border-red-600' : 'bg-white border-red-200'}`}> {clientForm.is_debtor && <Check className="w-4 h-4 text-white" />} </div><span className="text-red-900 font-bold text-sm">Cliente Inadimplente (Bloquear Acesso)</span></div><div className="flex items-center gap-3 p-4 bg-yellow-50 rounded-xl border border-yellow-100 cursor-pointer hover:bg-yellow-100 transition-colors" onClick={() => setClientForm({...clientForm, override_expiration: !clientForm.override_expiration})}><div className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${clientForm.override_expiration ? 'bg-yellow-500 border-yellow-500' : 'bg-white border-yellow-200'}`}> {clientForm.override_expiration && <Check className="w-4 h-4 text-white" />} </div><div><span className="text-yellow-900 font-bold text-sm block">Liberar Acesso (Vencido)</span></div></div></div>
                         <button onClick={handleSaveClient} className="w-full bg-gray-900 text-white font-bold py-4 rounded-xl hover:bg-black flex justify-center items-center shadow-lg mt-2"> {loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : 'Salvar no Banco de Dados'} </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- VIEW USERS MODAL (NOVO) --- */}
+        {viewUsersModal.open && viewUsersModal.cred && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[80vh] animate-fade-in-up">
+                    {/* Header */}
+                    <div className="p-6 border-b border-gray-100 flex justify-between items-start bg-gray-50 rounded-t-3xl">
+                        <div>
+                            <h3 className="text-xl font-black text-gray-900">Usuários Vinculados</h3>
+                            <div className="mt-2 flex flex-col gap-1">
+                                <span className="text-sm font-bold text-primary-600 bg-primary-50 px-2 py-1 rounded-lg w-fit">
+                                    {viewUsersModal.cred.service}
+                                </span>
+                                <span className="text-xs font-mono text-gray-500">
+                                    {viewUsersModal.cred.email}
+                                </span>
+                            </div>
+                        </div>
+                        <button 
+                            onClick={() => setViewUsersModal({ ...viewUsersModal, open: false })}
+                            className="p-2 bg-white rounded-full hover:bg-gray-200 transition-colors shadow-sm"
+                        >
+                            <X className="w-5 h-5 text-gray-500" />
+                        </button>
+                    </div>
+
+                    {/* List */}
+                    <div className="p-6 overflow-y-auto">
+                        {viewUsersModal.users.length === 0 ? (
+                            <p className="text-center text-gray-400 py-10">Nenhum usuário usando esta conta no momento.</p>
+                        ) : (
+                            <div className="grid gap-3">
+                                {viewUsersModal.users.map(u => (
+                                    <div key={u.id} className="flex items-center justify-between p-4 bg-white border border-gray-100 rounded-2xl shadow-sm hover:border-primary-200 transition-colors">
+                                        <div className="flex items-center gap-4">
+                                            <div className="bg-gray-100 p-3 rounded-full">
+                                                <UserIcon className="w-5 h-5 text-gray-600" />
+                                            </div>
+                                            <div>
+                                                <p className="font-bold text-gray-900">{u.client_name || 'Sem Nome'}</p>
+                                                <p className="text-xs font-mono text-gray-500">{u.phone_number}</p>
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <span className="block text-[10px] font-bold uppercase text-gray-400">Comprou em</span>
+                                            <span className="text-sm font-bold text-gray-700">
+                                                {new Date(u.purchase_date).toLocaleDateString('pt-BR')}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    
+                    {/* Footer */}
+                    <div className="p-4 border-t border-gray-100 bg-gray-50 rounded-b-3xl text-center">
+                        <p className="text-xs text-gray-400">Total: {viewUsersModal.users.length} usuários nesta conta.</p>
                     </div>
                 </div>
             </div>

@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { User, AppCredential } from '../types';
 import { getAssignedCredential } from '../services/credentialService';
 import { getSystemConfig, SystemConfig, updateClientPreferences, updateClientName, getAllClients } from '../services/clientService';
-import { CheckCircle, AlertCircle, Copy, RefreshCw, Check, Lock, CreditCard, ChevronRight, Star, Cast, Gamepad2, Rocket, X, Megaphone, Calendar, Clock, Crown, Zap, Palette, Upload, Image, Sparkles, Gift, AlertTriangle, Loader2, PlayCircle, Smartphone, Tv, ShoppingCart, RotateCw, Camera, Edit2, Trash2 } from 'lucide-react';
+import { CheckCircle, AlertCircle, Copy, RefreshCw, Check, Lock, CreditCard, ChevronRight, Star, Cast, Gamepad2, Rocket, X, Megaphone, Calendar, Clock, Crown, Zap, Palette, Upload, Image, Sparkles, Gift, AlertTriangle, Loader2, PlayCircle, Smartphone, Tv, ShoppingCart, RotateCw, Camera, Edit2, Trash2, MessageCircle } from 'lucide-react';
 
 interface DashboardProps {
   user: User;
@@ -79,29 +79,6 @@ const SERVICE_CATALOG = [
     }
 ];
 
-const getCredentialStatus = (serviceName: string, day: number) => {
-    const name = serviceName.toLowerCase();
-    if (name.includes('viki')) {
-        const daysLeft = 14 - day;
-        if (day < 13) return { color: 'bg-blue-100 text-blue-700', text: `✨ Sua conta renova em ${daysLeft} dias!` };
-        if (day === 13) return { color: 'bg-yellow-100 text-yellow-800', text: `⚠️ Amanhã trocamos a senha!` };
-        if (day === 14) return { color: 'bg-orange-100 text-orange-800', text: `⏰ Último dia! Nova conta em breve.` };
-        return { color: 'bg-red-100 text-red-800', text: `🚫 Aguardando nova conta...` };
-    }
-    if (name.includes('kocowa')) {
-        const daysLeft = 30 - day;
-        if (day < 20) return { color: 'bg-blue-100 text-blue-700', text: `🦋 Tudo tranquilo! Renova em ${daysLeft} dias.` };
-        if (day >= 20 && day < 25) return { color: 'bg-yellow-100 text-yellow-800', text: `📅 Ciclo acabando em ${daysLeft} dias.` };
-        return { color: 'bg-red-100 text-red-800', text: `🔄 Renovação iminente.` };
-    }
-    if (name.includes('iqiyi')) {
-        const daysLeft = 30 - day;
-        if (day < 29) return { color: 'bg-blue-100 text-blue-700', text: `🎋 Curta seus doramas! Renova em ${daysLeft} dias.` };
-        return { color: 'bg-red-100 text-red-800', text: `🐉 Trocando a conta em breve!` };
-    }
-    return { color: 'bg-gray-100 text-gray-700', text: `Dia ${day} de uso.` };
-};
-
 const compressImage = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -167,18 +144,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenSupport, onOpenChecko
   const bgStyle = bgImage ? { backgroundImage: `url(${bgImage})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundAttachment: 'fixed' } : {}; 
   const containerClass = bgImage ? 'bg-black/50 min-h-screen pb-32 backdrop-blur-sm' : `${activeTheme.bgClass} min-h-screen pb-32 transition-colors duration-500 will-change-contents`;
 
-  // Identificação do Usuário Demo (99999...) vs Teste Grátis (0000...)
-  const isDemoAccount = user.phoneNumber.startsWith('99999');
-  
   // Logic to split name for display (Stylized)
   const nameParts = userName ? userName.trim().split(' ').filter(Boolean) : [];
   const firstNameDisplay = nameParts[0] || (userName.trim() === '' ? '' : userName);
   const secondNameDisplay = nameParts.length > 1 ? nameParts.slice(1).join(' ') : null;
 
   useEffect(() => {
-      // Se user.name for vazio, pode vir como '' ou undefined. 'Dorameira' é o default visual apenas se quisermos forçar.
-      // Se o usuário limpou, respeitamos o vazio aqui, mas o backend pode ter 'Dorameira' se for padrão.
-      // Aqui usamos user.name direto para respeitar o que veio do banco.
       setUserName(user.name || 'Dorameira');
       setProfileImage(user.profileImage || '');
   }, [user]);
@@ -206,23 +177,17 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenSupport, onOpenChecko
   useEffect(() => {
     const loadCreds = async () => {
       setLoadingCreds(true);
-      
       try {
-          // PERFORMANCE FIX: Busca todos os clientes UMA vez para calcular as filas
           const [conf, allClients] = await Promise.all([
               getSystemConfig(),
               getAllClients()
           ]);
-          
           setSysConfig(conf);
-          
           const results = await Promise.all(user.services.map(async (rawService) => {
             const name = getServiceName(rawService);
-            // Passa a lista allClients para evitar que a função busque tudo de novo para cada serviço
             const result = await getAssignedCredential(user, name, allClients);
             return { service: rawService, cred: result.credential, alert: result.alert, daysActive: result.daysActive || 0 };
           }));
-          
           setAssignedCredentials(results);
       } catch(e) {
           console.error("Erro carregando dashboard", e);
@@ -272,12 +237,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenSupport, onOpenChecko
   };
 
   const handleSaveName = async () => {
-      // PERMITIR NOME VAZIO: Removemos a validação !tempName.trim()
       setIsEditingName(false);
-      const nameToSave = tempName; // Salva exatamente o que foi digitado, mesmo que vazio
-      setUserName(nameToSave); // Optimistic UI update
-      
-      // Update local and remote
+      const nameToSave = tempName; 
+      setUserName(nameToSave); 
       updateLocalSession({ name: nameToSave });
       await updateClientName(user.phoneNumber, nameToSave);
   };
@@ -502,103 +464,124 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenSupport, onOpenChecko
                      const details = SERVICE_CATALOG.find(s => name.toLowerCase().includes(s.id.toLowerCase()));
                      const iconBg = details?.iconColor || 'bg-gray-500';
                      const { expiryDate, isBlocked, isGracePeriod, daysLeft } = calculateSubscriptionStatus(rawSvc);
-                     let statusText = `Vence: ${formatDate(expiryDate)}`;
-                     let statusColor = "text-gray-500";
-                     let dotColorClass = "bg-green-500"; 
-                     if (daysLeft < 0) { dotColorClass = "bg-gray-900"; } else if (daysLeft <= 2) { dotColorClass = "bg-red-600"; }
-                     if (isBlocked) { statusText = `Vencido há ${Math.abs(daysLeft)} dias`; statusColor = "text-red-600"; } else if (isGracePeriod) { statusText = `Tolerância (${Math.abs(daysLeft)} dias)`; statusColor = "text-orange-500"; }
+                     
+                     let badgeClass = "bg-gray-100 text-gray-700";
+                     let badgeContent;
+                     let buttonContent = null;
+
+                     if (isBlocked) { 
+                         // ACABOU A TOLERÂNCIA
+                         badgeClass = "bg-red-50 text-red-700 border border-red-100";
+                         badgeContent = (
+                             <>
+                                 <span className="text-[9px] font-black uppercase block opacity-80 leading-none mb-0.5 tracking-wider">ACESSO BLOQUEADO</span>
+                                 <span className="text-xs font-bold block leading-tight">Renove Agora</span>
+                             </>
+                         );
+                         buttonContent = (
+                              <button 
+                                 onClick={(e) => { e.stopPropagation(); onOpenCheckout('renewal', name); }}
+                                 className="mt-1.5 w-full bg-red-600 text-white text-[10px] font-bold px-2 py-1.5 rounded-lg shadow-md shadow-red-200 animate-pulse active:scale-95 transition-transform flex items-center justify-center gap-1"
+                             >
+                                 RENOVAR <RotateCw className="w-3 h-3 animate-spin-slow" />
+                             </button>
+                         );
+                     } else if (isGracePeriod) { 
+                         // VENCEU (TOLERÂNCIA)
+                         badgeClass = "bg-orange-50 text-orange-800 border border-orange-100";
+                         badgeContent = (
+                             <>
+                                 <span className="text-[9px] font-black uppercase block opacity-80 leading-none mb-0.5 tracking-wider">VENCEU (TOLERÂNCIA)</span>
+                                 <span className="text-xs font-bold block leading-tight">{daysLeft === 0 ? 'Último Dia' : `${Math.abs(daysLeft)} Dias Restantes`}</span>
+                             </>
+                         );
+                         buttonContent = (
+                              <button 
+                                 onClick={(e) => { e.stopPropagation(); onOpenCheckout('renewal', name); }}
+                                 className="mt-1.5 w-full bg-orange-500 text-white text-[10px] font-bold px-2 py-1.5 rounded-lg shadow-sm active:scale-95 transition-transform"
+                             >
+                                 Renovar
+                             </button>
+                         );
+                     } else {
+                         // NORMAL
+                         badgeClass = "bg-blue-50 text-blue-700 border border-blue-100";
+                         badgeContent = (
+                             <>
+                                 <span className="text-[9px] font-bold uppercase block opacity-80 leading-none mb-0.5 tracking-wider">VENCIMENTO</span>
+                                 <span className="text-xs font-black block leading-tight">{formatDate(expiryDate)}</span>
+                             </>
+                         );
+                     }
 
                      return (
                          <div key={i} className={`w-full flex items-center justify-between p-3 rounded-xl border bg-white hover:shadow-md transition-all relative overflow-hidden ${isBlocked ? 'border-red-200 bg-red-50' : 'border-gray-200'}`}>
                             <button onClick={() => handleServiceClick(rawSvc)} className="flex items-center gap-3 relative z-10 flex-1 text-left">
                                 <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-white shadow-sm ${iconBg} shrink-0 text-lg`}>{name.substring(0,1).toUpperCase()}</div>
-                                <div className="min-w-0"><span className="font-bold text-gray-900 text-base truncate block flex items-center gap-2"><div className={`w-2.5 h-2.5 rounded-full ${dotColorClass} shadow-sm`}></div>{name}</span><span className={`text-[10px] font-bold ${statusColor}`}>{statusText}</span></div>
+                                <div className="min-w-0 flex-1">
+                                    <span className="font-bold text-gray-900 text-base truncate block">{name}</span>
+                                    <span className="text-xs text-gray-500 block truncate">{details?.benefits?.[0] || 'Acesso Premium'}</span>
+                                </div>
                             </button>
-                            <button onClick={() => onOpenCheckout('renewal', name)} className={`ml-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-wide transition-all active:scale-95 flex flex-col items-center gap-1 shadow-lg group ${isBlocked ? 'bg-gradient-to-br from-red-600 to-rose-600 text-white shadow-red-200 animate-pulse' : 'bg-gradient-to-br from-emerald-400 to-green-600 text-white shadow-green-200 hover:shadow-green-300 hover:-translate-y-0.5'}`}>
-                                <RefreshCw className={`w-4 h-4 ${!isBlocked && 'group-hover:rotate-180 transition-transform duration-500'}`} />
-                                Renovar
-                            </button>
+                            
+                            {/* DATA DE VENCIMENTO DESTACADA */}
+                            <div className="flex flex-col items-end gap-1 ml-3 relative z-10 w-32">
+                                <div className={`px-2 py-1.5 rounded-lg border text-center w-full ${badgeClass}`}>
+                                    {badgeContent}
+                                </div>
+                                {buttonContent}
+                            </div>
                          </div>
                      );
-                 }) : (<div className="text-center p-4 bg-gray-50 rounded-xl border border-dashed border-gray-300"><span className="text-xs text-gray-400 italic">Nenhum serviço ativo.</span></div>)}
-             </div>
-        </div>
-
-        {/* CONNECT BUTTON - MOVED BELOW SUBSCRIPTIONS */}
-        <button 
-            onClick={onOpenSupport} 
-            className="w-full bg-gradient-to-r from-pink-600 to-blue-600 rounded-2xl p-5 shadow-lg shadow-blue-200/50 text-white relative overflow-hidden group active:scale-[0.98] transition-all transform hover:-translate-y-1 hover:shadow-xl"
-        >
-            <div className="absolute top-0 right-0 -mt-2 -mr-2 w-24 h-24 bg-white/20 rounded-full blur-2xl"></div>
-            <div className="relative z-10 flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                    <div className="bg-white/20 p-3 rounded-full backdrop-blur-sm"><div className="flex gap-1"><Tv className="w-6 h-6 text-white" /><Smartphone className="w-4 h-4 text-white self-end" /></div></div>
-                    <div className="text-left"><h3 className="font-black text-lg leading-tight tracking-tight">Precisa de Ajuda?</h3><p className="text-blue-100 text-xs mt-1 font-semibold">Conectar na TV ou Celular</p></div>
-                </div>
-                <ChevronRight className="w-6 h-6 text-white/80 group-hover:translate-x-1 transition-transform" />
-            </div>
-        </button>
-
-        {/* ACCESS CREDENTIALS */}
-        <div className="space-y-4 pt-2">
-             <div className="flex items-center justify-between px-1"><h2 className="text-xl font-extrabold text-gray-800 flex items-center bg-white/50 px-3 py-1 rounded-lg backdrop-blur-sm"><div className={`w-1.5 h-6 rounded-full mr-3 ${activeTheme.class}`}></div>Suas Contas</h2>{loadingCreds && <RefreshCw className="w-5 h-5 text-gray-400 animate-spin" />}</div>
-             <div className="grid gap-4">
-               {!loadingCreds && !assignedCredentials.some(c => c.cred) && <p className="text-gray-500 text-sm bg-white p-6 rounded-xl text-center border border-gray-200 shadow-sm">Aguardando liberação de acesso.</p>}
-               {assignedCredentials.map(({ service, cred, daysActive }, idx) => {
-                 const name = getServiceName(service);
-                 
-                 // Lógica de Exibição Separada: 
-                 // Demo (99999...) -> Falso
-                 // Teste Grátis (0000...) -> Real
-                 const displayEmail = isDemoAccount ? `demo_${name.toLowerCase()}@eudorama.com` : (cred?.email || 'Sem Acesso');
-                 const displayPass = isDemoAccount ? 'demo1234' : (cred?.password || '---');
-                 
-                 const status = getCredentialStatus(name, daysActive);
-                 const { isBlocked, daysLeft } = calculateSubscriptionStatus(service);
-                 let dotColorClass = "bg-green-500"; if (daysLeft < 0) dotColorClass = "bg-gray-900"; else if (daysLeft <= 2) dotColorClass = "bg-red-600";
-
-                 return cred ? (
-                   <div key={idx} className={`bg-white rounded-2xl shadow-lg border overflow-hidden group transition-colors relative ${isBlocked ? 'border-red-200' : 'border-gray-200 hover:border-pink-300'}`}>
-                     <div className="bg-gray-50 px-5 py-4 border-b border-gray-100 flex justify-between items-center"><span className="font-extrabold text-gray-800 text-lg flex items-center gap-2"><div className={`w-3 h-3 rounded-full ${dotColorClass}`}></div>{name}</span>{isBlocked && <Lock className="w-4 h-4 text-red-500" />}</div>
-                     {!isBlocked && (<div className={`px-5 py-2 ${status.color} text-xs font-bold flex items-center`}><Clock className="w-3 h-3 mr-2" />{status.text}</div>)}
-                     <div className="p-5 flex flex-col gap-4 relative">
-                        {isBlocked && (<div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex flex-col items-center justify-center p-4 text-center rounded-b-2xl"><div className="flex flex-col items-center max-w-[200px]"><div className="bg-red-100 p-3 rounded-full mb-2 shadow-sm"><Lock className="w-6 h-6 text-red-600" /></div><h3 className="text-red-900 font-extrabold text-lg leading-tight mb-1">Acesso Pausado</h3><p className="text-red-700 text-[10px] font-medium mb-3 leading-snug">Tolerância de 3 dias expirou.</p><button onClick={() => onOpenCheckout('renewal')} className="bg-red-600 text-white w-full py-3 rounded-xl font-bold shadow-lg text-sm hover:bg-red-700 active:scale-95 transition-transform">Renovar para Liberar</button></div></div>)}
-                        <div className="flex justify-between items-center bg-gray-50/50 p-3 rounded-xl border border-gray-100 hover:bg-white transition-colors"><div className="overflow-hidden"><p className="text-[10px] text-gray-400 font-bold uppercase">Email</p><p className="text-base font-bold text-gray-900 truncate select-all">{isBlocked ? '•••••••••••' : displayEmail}</p></div><button disabled={isBlocked} onClick={() => copyToClipboard(displayEmail || '', cred.id + 'email')} className="p-2.5 bg-white border border-gray-200 rounded-lg text-gray-400 hover:text-pink-600 transition-colors shadow-sm active:scale-90">{copiedId === cred.id + 'email' ? <Check className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5" />}</button></div>
-                        <div className="flex justify-between items-center bg-gray-50/50 p-3 rounded-xl border border-gray-100 hover:bg-white transition-colors"><div className="overflow-hidden"><p className="text-[10px] text-gray-400 font-bold uppercase">Senha</p><p className="text-base font-bold text-gray-900 tracking-wider select-all">{isBlocked ? '••••••' : displayPass}</p></div><button disabled={isBlocked} onClick={() => copyToClipboard(displayPass || '', cred.id + 'pass')} className="p-2.5 bg-white border border-gray-200 rounded-lg text-gray-400 hover:text-pink-600 transition-colors shadow-sm active:scale-90">{copiedId === cred.id + 'pass' ? <Check className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5" />}</button></div>
+                 }) : (
+                     <div className="text-center p-6 bg-gray-50 rounded-2xl border border-dashed border-gray-300">
+                         <p className="text-gray-500 font-bold mb-2">Você ainda não tem assinaturas ativas.</p>
+                         <button onClick={() => onOpenCheckout('new_sub')} className="text-xs bg-gray-900 text-white px-4 py-2 rounded-lg font-bold">Ver Planos</button>
                      </div>
-                   </div>
-                 ) : null;
-               })}
+                 )}
              </div>
         </div>
 
-        {/* --- MISSING SERVICES (REDESIGNED UPSELL - TICKET STYLE WITH BIG BUTTON) --- */}
+        {/* ... (Resto do componente: catálogo, suporte, etc.) ... */}
+        
+        {/* CATÁLOGO DE NOVOS SERVIÇOS (Se houver faltando) */}
         {missingServices.length > 0 && (
-            <div className="space-y-4 pt-6 pb-4 border-t border-gray-200 bg-white/80 p-4 rounded-3xl backdrop-blur-sm">
-                <div className="flex items-center justify-between px-1"><h2 className="text-xl font-extrabold text-gray-800 flex items-center"><Rocket className="w-6 h-6 text-orange-500 mr-2 animate-pulse" />Disponíveis para Assinar</h2></div>
-                <div className="flex overflow-x-auto gap-4 pb-4 px-1 scrollbar-hide snap-x">
-                    {missingServices.map((service) => (
-                        <div key={service.id} className="snap-center min-w-[260px] max-w-[260px] h-[340px] rounded-3xl overflow-hidden relative shadow-xl group cursor-pointer transition-transform hover:scale-[1.02] flex flex-col" onClick={() => onOpenCheckout('new_sub', service.name)}>
-                            <div className={`absolute inset-0 bg-gradient-to-br ${service.color}`}></div>
-                            <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
-                            <div className="relative h-[45%] p-5 flex flex-col justify-between z-10 bg-white/10 backdrop-blur-md border-b border-white/20">
-                                <div className="flex justify-between items-start"><div className="bg-white/20 p-2 rounded-xl backdrop-blur-md shadow-inner"><Crown className="w-6 h-6 text-white" /></div><span className="bg-black/30 px-3 py-1 rounded-full text-[10px] font-bold text-white uppercase backdrop-blur-sm border border-white/10">Premium</span></div>
-                                <div><h3 className="text-2xl font-black text-white tracking-tight drop-shadow-md">{service.name}</h3><div className="w-10 h-1 bg-white/50 rounded-full mt-2"></div></div>
-                            </div>
-                            <div className="relative h-[55%] bg-white p-5 flex flex-col justify-between z-10">
-                                <div className="space-y-2">{service.benefits.slice(0, 2).map((benefit, i) => (<div key={i} className="flex items-center text-xs text-gray-600 font-medium"><CheckCircle className={`w-4 h-4 mr-2 ${service.iconColor.replace('bg-', 'text-')}`} /><span className="truncate">{benefit}</span></div>))}</div>
-                                <div className="mt-2 pt-3 border-t border-dashed border-gray-200">
-                                    <div className="mb-2"><p className="text-[10px] uppercase font-bold text-gray-400">Mensal</p><p className={`text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r ${service.color}`}>{service.price}</p></div>
-                                    <button className={`w-full py-3 rounded-xl shadow-lg bg-gradient-to-r ${service.color} text-white font-bold text-sm uppercase tracking-wide flex items-center justify-center gap-2 active:scale-95 transition-transform animate-pulse`}>
-                                        <ShoppingCart className="w-4 h-4" /> COMPRAR AGORA
-                                    </button>
-                                </div>
-                            </div>
+            <div className="mt-6">
+                <div className="flex items-center gap-2 mb-3 px-1">
+                    <Rocket className="w-5 h-5 text-purple-600" />
+                    <h3 className="font-bold text-gray-800">Adicionar ao seu Plano</h3>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                    {missingServices.map(svc => (
+                        <div key={svc.id} className="bg-white p-3 rounded-2xl border border-gray-100 shadow-sm relative overflow-hidden group">
+                            <div className={`absolute top-0 right-0 w-16 h-16 bg-gradient-to-br ${svc.color} opacity-10 rounded-bl-full -mr-8 -mt-8 transition-transform group-hover:scale-150`}></div>
+                            <h4 className="font-bold text-gray-900 text-sm mb-1 relative z-10">{svc.name}</h4>
+                            <p className="text-[10px] text-gray-500 mb-3 relative z-10 h-8 overflow-hidden">{svc.benefits[0]}</p>
+                            <button 
+                                onClick={() => onOpenCheckout('new_sub', svc.name)}
+                                className={`w-full py-2 rounded-xl text-xs font-bold text-white shadow-md active:scale-95 transition-all bg-gradient-to-r ${svc.color}`}
+                            >
+                                Assinar {svc.price}
+                            </button>
                         </div>
                     ))}
                 </div>
             </div>
         )}
+
+        {/* BOTOES DE ACAO RAPIDA */}
+        <div className="grid grid-cols-2 gap-3 mt-4">
+            <button onClick={onOpenSupport} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col items-center justify-center gap-2 hover:bg-gray-50 active:scale-95 transition-all">
+                <div className="bg-green-100 p-2 rounded-full"><MessageCircle className="w-6 h-6 text-green-600" /></div>
+                <span className="text-xs font-bold text-gray-700">Assistente IA</span>
+            </button>
+            <button onClick={onOpenGame} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col items-center justify-center gap-2 hover:bg-gray-50 active:scale-95 transition-all relative overflow-hidden">
+                <div className="absolute top-2 right-2 bg-red-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded-full animate-bounce">NOVO</div>
+                <div className="bg-purple-100 p-2 rounded-full"><Gamepad2 className="w-6 h-6 text-purple-600" /></div>
+                <span className="text-xs font-bold text-gray-700">Jogos & Quiz</span>
+            </button>
+        </div>
+
       </div>
       </div>
     </div>

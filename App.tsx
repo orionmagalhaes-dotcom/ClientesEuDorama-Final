@@ -11,7 +11,7 @@ import NameModal from './components/NameModal';
 import GamesHub from './components/GamesHub';
 import Toast from './components/Toast';
 import { User, Dorama } from './types';
-import { addDoramaToDB, updateDoramaInDB, removeDoramaFromDB, getUserDoramasFromDB, saveGameProgress, syncDoramaBackup, addLocalDorama, refreshUserProfile } from './services/clientService';
+import { addDoramaToDB, updateDoramaInDB, removeDoramaFromDB, getUserDoramasFromDB, saveGameProgress, syncDoramaBackup, addLocalDorama, refreshUserProfile, updateLastActive, supabase } from './services/clientService';
 import { Heart, X, CheckCircle2, MessageCircle, AlertTriangle, Gift, Gamepad2, Sparkles, Home, Tv2, Palette, RefreshCw, LogOut } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -94,6 +94,74 @@ const App: React.FC = () => {
       }
   }, [currentUser?.watching, currentUser?.favorites, currentUser?.completed]);
 
+  // --- REALTIME & FOCUS REFRESH LOGIC ---
+  useEffect(() => {
+      if (!currentUser || isTestSession || isAdminMode) return;
+
+      // 1. Initial Update
+      updateLastActive(currentUser.phoneNumber);
+
+      // 2. Heartbeat (A cada 2 minutos se a aba estiver visível)
+      const heartbeatInterval = setInterval(() => {
+          if (document.visibilityState === 'visible') {
+              console.log("💓 Heartbeat: Updating online status...");
+              updateLastActive(currentUser.phoneNumber);
+          }
+      }, 2 * 60 * 1000); // 2 minutos
+
+      // 3. Focus Listener
+      const onFocus = () => {
+          console.log("👀 App em foco: Verificando atualizações e status online...");
+          handleRefreshSession(true); // True = silencioso
+          updateLastActive(currentUser.phoneNumber);
+      };
+
+      window.addEventListener('focus', onFocus);
+      window.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') onFocus();
+      });
+
+      // 4. SUPABASE REALTIME SUBSCRIPTION FOR DATA
+      const channel = supabase
+          .channel(`user-updates-${currentUser.id}`)
+          .on(
+              'postgres_changes',
+              {
+                  event: 'UPDATE',
+                  schema: 'public',
+                  table: 'clients',
+                  filter: `id=eq.${currentUser.id}`,
+              },
+              async (payload) => {
+                  console.log('🔄 REALTIME: Atualização recebida do banco:', payload);
+                  const phoneToRefresh = payload.new.phone_number || currentUser.phoneNumber;
+                  const { user } = await refreshUserProfile(phoneToRefresh);
+                  
+                  if (user) {
+                      setCurrentUser(prevUser => {
+                          if (!prevUser) return user;
+                          const mergedUser = {
+                              ...user,
+                              watching: prevUser.watching,
+                              favorites: prevUser.favorites,
+                              completed: prevUser.completed,
+                          };
+                          localStorage.setItem('eudorama_session', JSON.stringify(mergedUser));
+                          return mergedUser;
+                      });
+                      setToast({ message: 'Sua assinatura foi atualizada! 🚀', type: 'success' });
+                  }
+              }
+          )
+          .subscribe();
+
+      return () => {
+          clearInterval(heartbeatInterval);
+          supabase.removeChannel(channel);
+          window.removeEventListener('focus', onFocus);
+      };
+  }, [currentUser?.id, currentUser?.phoneNumber, isTestSession, isAdminMode]);
+
   // 1-Hour Session Timer for Test Users
   useEffect(() => {
       let timer: ReturnType<typeof setTimeout>;
@@ -133,10 +201,11 @@ const App: React.FC = () => {
   };
 
   // --- REFRESH DATA HANDLER ---
-  const handleRefreshSession = async () => {
+  const handleRefreshSession = async (silent: boolean = false) => {
       if (!currentUser) return;
       
-      setIsRefreshing(true);
+      if (!silent) setIsRefreshing(true);
+      
       const { user, error } = await refreshUserProfile(currentUser.phoneNumber);
       
       if (user) {
@@ -153,11 +222,11 @@ const App: React.FC = () => {
           };
           
           handleLogin(updatedUser, true, isTestSession);
-          setToast({ message: 'Dados sincronizados com sucesso!', type: 'success' });
+          if (!silent) setToast({ message: 'Dados sincronizados com sucesso!', type: 'success' });
       } else {
-          setToast({ message: error || 'Erro ao sincronizar.', type: 'error' });
+          if (!silent) setToast({ message: error || 'Erro ao sincronizar.', type: 'error' });
       }
-      setIsRefreshing(false);
+      if (!silent) setIsRefreshing(false);
   };
 
   const handleNameSaved = (newName: string) => {
@@ -392,7 +461,7 @@ const App: React.FC = () => {
                   onOpenDoraminha={() => {}} 
                   onOpenCheckout={handleOpenCheckout}
                   onOpenGame={() => setActiveTab('games')}
-                  onRefresh={handleRefreshSession}
+                  onRefresh={() => handleRefreshSession(false)}
                   isRefreshing={isRefreshing}
                   showPalette={showPalette}
                   setShowPalette={setShowPalette}
@@ -495,7 +564,7 @@ const App: React.FC = () => {
                 <Palette className="w-4 h-4" /> <span className="hidden sm:inline">Tema</span>
             </button>
             <button 
-                onClick={handleRefreshSession}
+                onClick={() => handleRefreshSession(false)}
                 disabled={isRefreshing}
                 className="flex items-center gap-1 px-3 py-2 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-xl text-xs font-bold transition-all border border-gray-200 disabled:opacity-50 active:scale-95"
             >

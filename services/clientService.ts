@@ -26,15 +26,26 @@ export const addLocalDorama = (phoneNumber: string, type: 'watching' | 'favorite
     currentData[type] = [];
   }
 
-  // Remove existing if updating
-  currentData[type] = currentData[type].filter((d: Dorama) => d.id !== dorama.id);
   currentData[type].push(dorama);
-  
   localStorage.setItem(`dorama_user_${phoneNumber}`, JSON.stringify(currentData));
   return currentData;
 };
 
 // --- FUNÇÕES DE CLIENTE ---
+
+/**
+ * Atualiza o timestamp da última atividade do usuário no banco
+ */
+export const updateLastActive = async (phoneNumber: string): Promise<void> => {
+    try {
+        await supabase
+            .from('clients')
+            .update({ last_active_at: new Date().toISOString() })
+            .eq('phone_number', phoneNumber);
+    } catch (e) {
+        console.error('Erro ao atualizar status online:', e);
+    }
+};
 
 /**
  * Busca TODOS os clientes (necessário para o algoritmo de distribuição de senhas e painel admin)
@@ -71,16 +82,14 @@ export const getTestUser = async (): Promise<{ user: User | null, error: string 
 
 /**
  * Verifica se o usuário existe e se já tem senha configurada.
- * Retorna também dados básicos de perfil para a UI de Login.
+ * Retorna lista de correspondências para desambiguação.
  */
 export const checkUserStatus = async (lastFourDigits: string): Promise<{ 
   exists: boolean; 
-  hasPassword: boolean; 
-  phoneMatches: string[];
-  profile?: { name?: string; photo?: string; }
+  matches: { phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }[];
 }> => {
   try {
-    if (!supabase) return { exists: false, hasPassword: false, phoneMatches: [] };
+    if (!supabase) return { exists: false, matches: [] };
 
     const { data, error } = await supabase
       .from('clients')
@@ -89,40 +98,55 @@ export const checkUserStatus = async (lastFourDigits: string): Promise<{
 
     if (error || !data || data.length === 0) {
       // Fallback Mock
-      const foundMock = MOCK_DB_CLIENTS.filter(c => c.phone_number.endsWith(lastFourDigits));
+      const foundMock = MOCK_DB_CLIENTS.filter(c => c.phone_number.endsWith(lastFourDigits) && !c.deleted);
       if (foundMock.length > 0) {
-         if (foundMock[0].deleted) return { exists: false, hasPassword: false, phoneMatches: [] };
-         return { exists: true, hasPassword: false, phoneMatches: [foundMock[0].phone_number], profile: { name: foundMock[0].client_name } };
+         const matches = foundMock.map(c => ({
+             phoneNumber: c.phone_number,
+             hasPassword: !!(c.client_password && c.client_password.trim()),
+             name: c.client_name
+         }));
+         return { exists: true, matches };
       }
-      return { exists: false, hasPassword: false, phoneMatches: [] };
+      return { exists: false, matches: [] };
     }
 
     // Filtra usuários excluídos
     const activeClients = (data as any[]).filter(c => !c.deleted);
 
     if (activeClients.length === 0) {
-       return { exists: false, hasPassword: false, phoneMatches: [] };
+       return { exists: false, matches: [] };
     }
 
-    // Lógica de Senha Global (Self-Healing) e Perfil
-    const hasPass = activeClients.some(row => row.client_password && row.client_password.trim() !== '');
-    const phones = Array.from(new Set(activeClients.map(d => d.phone_number as string)));
-    
-    // Pega o perfil do registro mais completo (que tem foto ou nome)
-    const profileRecord = activeClients.find(r => r.profile_image && r.client_name) || 
-                          activeClients.find(r => r.client_name) || 
-                          activeClients[0];
+    // Agrupa matches por número de telefone (para evitar duplicatas se o mesmo número tiver múltiplas entradas de compras)
+    const uniqueMap = new Map<string, { phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }>();
 
-    const profile = {
-        name: profileRecord?.client_name,
-        photo: profileRecord?.profile_image
-    };
+    activeClients.forEach(row => {
+        const phone = row.phone_number;
+        const hasPass = !!(row.client_password && row.client_password.trim() !== '');
+        
+        if (!uniqueMap.has(phone)) {
+            uniqueMap.set(phone, {
+                phoneNumber: phone,
+                hasPassword: hasPass,
+                name: row.client_name,
+                photo: row.profile_image
+            });
+        } else {
+            // Se já existe, atualiza se encontrar uma senha ou um nome melhor
+            const existing = uniqueMap.get(phone)!;
+            if (hasPass && !existing.hasPassword) existing.hasPassword = true;
+            if (row.client_name && !existing.name) existing.name = row.client_name;
+            if (row.profile_image && !existing.photo) existing.photo = row.profile_image;
+        }
+    });
 
-    return { exists: true, hasPassword: hasPass, phoneMatches: phones, profile };
+    const matches = Array.from(uniqueMap.values());
+
+    return { exists: true, matches };
 
   } catch (e) {
     console.error(e);
-    return { exists: false, hasPassword: false, phoneMatches: [] };
+    return { exists: false, matches: [] };
   }
 };
 
@@ -217,6 +241,9 @@ export const loginWithPassword = async (phoneNumber: string, password: string): 
                 if (error) console.error("Erro ao auto-corrigir senhas:", error);
             });
     }
+
+    // ATUALIZA STATUS ONLINE NO LOGIN
+    updateLastActive(phoneNumber);
 
     return processUserLogin(allRecords);
 

@@ -14,6 +14,7 @@ export interface ClientDBRow {
   created_at: string;
   client_password?: string; // Nova coluna para senha do cliente
   game_progress?: any; // Nova coluna JSONB para salvar progresso dos jogos
+  last_active_at?: string; // Nova coluna para rastrear status online
   
   // Personalization (Stored in JSONB 'preferences' or distinct columns if migrated)
   // For this version we will map strictly to UI state, assuming persisted via localStorage or future DB update
