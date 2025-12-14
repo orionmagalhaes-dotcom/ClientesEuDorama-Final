@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { User } from '../types';
 import { checkUserStatus, loginWithPassword, registerClientPassword, verifyAdminLogin, getRotationalTestPassword } from '../services/clientService';
-import { Loader2, Lock, AlertCircle, UserCheck, Shield, Sparkles, Play, ChevronRight, Star, ArrowRight } from 'lucide-react';
+import { Loader2, Lock, AlertCircle, UserCheck, Shield, Sparkles, Play, ChevronRight, Star, ArrowRight, Eye, EyeOff } from 'lucide-react';
 
 interface LoginProps {
   onLogin: (user: User, remember: boolean, isTest?: boolean) => void;
@@ -64,6 +64,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
   const [multipleMatches, setMultipleMatches] = useState<{ phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }[]>([]);
 
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false); // Toggle visibility
   const [showAdmin, setShowAdmin] = useState(false);
   
   // Admin inputs
@@ -291,8 +292,8 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
                         </p>
                     </div>
                     
-                    {/* INPUT COM MÁSCARA FIXA VISUAL */}
-                    <div className={`rounded-xl p-4 flex items-center justify-center relative group transition-all ${theme.inputContainerClass}`}>
+                    {/* INPUT COM MÁSCARA FIXA VISUAL (FONTE REDUZIDA E COMPACTA) */}
+                    <div className={`rounded-xl p-3 flex items-center justify-center relative group transition-all ${theme.inputContainerClass}`}>
                         <span className={`text-xl font-bold tracking-widest select-none font-mono opacity-40 ${theme.inputTextClass}`}>
                             (••) ••••• - 
                         </span>
@@ -300,7 +301,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
                             type="tel"
                             maxLength={4}
                             placeholder="____"
-                            className={`w-24 bg-transparent text-center text-xl font-bold outline-none tracking-[0.2em] font-mono focus:placeholder-transparent ml-1 ${theme.inputTextClass} ${theme.inputPlaceholderClass}`}
+                            className={`w-16 bg-transparent text-center text-xl font-bold outline-none tracking-[0.2em] font-mono focus:placeholder-transparent ml-1 h-8 leading-none ${theme.inputTextClass} ${theme.inputPlaceholderClass}`}
                             value={digits}
                             onChange={handleDigitsChange}
                             autoFocus
@@ -385,12 +386,10 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
         )}
 
         {(step === 'password' || step === 'create_password') && (
-            // PASSWORD STEP
             <form onSubmit={step === 'password' ? handleLoginSubmit : handleRegisterPassword} className="space-y-6 animate-slide-up">
                 
                 <div className={`text-center p-4 rounded-xl border ${theme.inputContainerClass}`}>
-                    
-                    {/* CONDITIONAL PROFILE DISPLAY */}
+                    {/* ... (Profile section) ... */}
                     {foundProfile?.photo ? (
                         <div className="w-20 h-20 rounded-full mx-auto mb-3 border-4 border-white/50 shadow-lg overflow-hidden">
                             <img src={foundProfile.photo} alt="Profile" className="w-full h-full object-cover" />
@@ -402,7 +401,6 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
                     )}
 
                     <p className={`text-[10px] font-bold uppercase mb-1 opacity-60 ${theme.subTextClass}`}>Identificado como</p>
-                    
                     {foundProfile?.name ? (
                         <p className={`font-black text-xl tracking-tight ${theme.textClass}`}>{foundProfile.name}</p>
                     ) : (
@@ -414,16 +412,23 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
                     <label className={`block text-[10px] font-bold uppercase mb-2 ml-1 opacity-70 ${theme.subTextClass}`}>
                         {step === 'create_password' ? 'Crie sua senha' : 'Sua senha'}
                     </label>
-                    <div className="flex items-center">
+                    <div className="flex items-center relative">
                         <Lock className={`w-5 h-5 mr-3 ml-1 opacity-50 ${theme.iconColor}`} />
                         <input
-                            type="password"
-                            className={`w-full bg-transparent font-bold text-xl outline-none ${theme.inputTextClass} ${theme.inputPlaceholderClass}`}
+                            type={showPassword ? "text" : "password"}
+                            className={`w-full bg-transparent font-bold text-xl outline-none ${theme.inputTextClass} ${theme.inputPlaceholderClass} pr-8`}
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             autoFocus
                             placeholder={fullPhoneFound === '00000000000' ? "Senha Rotativa" : "******"}
                         />
+                        <button 
+                            type="button" 
+                            onClick={() => setShowPassword(!showPassword)}
+                            className="absolute right-0 text-gray-400 hover:text-gray-600 transition-colors"
+                        >
+                            {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                        </button>
                     </div>
                 </div>
 
@@ -441,10 +446,9 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
                     >
                         {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : (step === 'create_password' ? 'Definir Senha e Entrar' : <>Acessar Painel <UserCheck className="w-4 h-4"/></>)}
                     </button>
-                    
                     <button 
                         type="button" 
-                        onClick={() => { setStep('identify'); setDigits(''); setPassword(''); setError(''); setFoundProfile(null); setMultipleMatches([]); }}
+                        onClick={() => { setStep('identify'); setDigits(''); setPassword(''); setError(''); setFoundProfile(null); setMultipleMatches([]); setShowPassword(false); }}
                         className={`font-bold text-xs py-2 transition-colors hover:underline opacity-70 hover:opacity-100 ${theme.subTextClass}`}
                     >
                         Não sou este número

@@ -116,8 +116,15 @@ export const getAssignedCredential = async (user: User, serviceName: string, pre
   }
 
   // --- LÓGICA PARA USUÁRIOS REAIS ---
+  // MATCHING ROBUSTO: Checa se a credencial contem o serviço OU se o serviço contém a credencial
+  // Ex: "Viki Pass" encontra "Viki" (DB) e "Viki" (User) encontra "Viki Pass" (DB)
   const allCreds = credentialsList
-    .filter(c => c.isVisible && c.service.toLowerCase().includes(serviceName.toLowerCase()))
+    .filter(c => {
+        if (!c.isVisible) return false;
+        const dbService = c.service.toLowerCase();
+        const userService = serviceName.toLowerCase();
+        return dbService.includes(userService) || userService.includes(dbService);
+    })
     .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
 
   if (allCreds.length === 0) return { credential: null, alert: null, daysActive: 0 };
@@ -144,7 +151,7 @@ export const getAssignedCredential = async (user: User, serviceName: string, pre
   const userIndex = clientsWithService.findIndex(c => c.phone_number.replace(/\D/g, '') === userPhoneClean);
 
   if (userIndex === -1) {
-    // Se não achou na lista (ex: Admin logado), mostra a primeira
+    // Se não achou na lista (ex: Admin logado ou falha de RLS), mostra a primeira credencial disponível
     const firstCred = allCreds[0];
     return calculateAlerts(firstCred, serviceName);
   }

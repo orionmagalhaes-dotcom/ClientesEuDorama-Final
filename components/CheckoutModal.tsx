@@ -1,12 +1,12 @@
 
 import React, { useState, useEffect } from 'react';
-import { X, Check, Copy, ShieldCheck, Zap, ArrowRight, MessageCircle, CalendarClock, Receipt, HelpCircle, AlertCircle, Gift, Rocket, Star } from 'lucide-react';
+import { X, Check, Copy, ShieldCheck, Zap, ArrowRight, MessageCircle, CalendarClock, Receipt, HelpCircle, AlertCircle, Gift, Rocket, Star, Calendar } from 'lucide-react';
 import { User } from '../types';
 
 interface CheckoutModalProps {
   onClose: () => void;
   user: User;
-  type?: 'renewal' | 'gift' | 'new_sub';
+  type?: 'renewal' | 'gift' | 'new_sub' | 'early_renewal';
   targetService?: string;
 }
 
@@ -64,7 +64,7 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
         setFormattedPrice(price.toFixed(2).replace('.', ','));
         setRenewalList([targetService || 'Novo Serviço']);
 
-    } else if (duration === 1 && type === 'renewal') {
+    } else if (duration === 1 && (type === 'renewal' || type === 'early_renewal')) {
         // Renewal Logic
         
         if (targetService) {
@@ -77,23 +77,19 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
             setIsUrgent(checkServiceUrgency(targetService));
         } else {
             // "Renovar Agora" global button clicked
-            
-            // 1. Identify Urgent Services
+            // ... (Logic for global button remains same) ...
             const urgentServices = services.filter(svc => checkServiceUrgency(svc));
             
             let servicesToRenew: string[] = [];
             
             if (urgentServices.length > 0) {
-                // If there are urgent services, renew ONLY them
                 servicesToRenew = urgentServices;
                 setIsUrgent(true);
             } else {
-                // If everything is fine, renew ALL (preventive renewal)
                 servicesToRenew = services;
                 setIsUrgent(false);
             }
 
-            // 2. Calculate Total
             let total = 0;
             servicesToRenew.forEach(service => {
                 if (service.toLowerCase().includes('viki')) {
@@ -127,6 +123,9 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
     } else if (type === 'new_sub') {
         const serviceName = targetService || 'Nova Assinatura';
         message = `Olá! Quero assinar o **${serviceName}** adicionalmente. Fiz o Pix de R$ ${formattedPrice}. Segue o comprovante (Cliente: ${user.phoneNumber}):`;
+    } else if (type === 'early_renewal') {
+        const itemText = renewalList.join(', ');
+        message = `Olá! Fiz um Pix para ADIANTAR a renovação do **${itemText}** por mais 30 dias. Segue comprovante (Cliente: ${user.phoneNumber}):`;
     } else {
         const itemText = renewalList.join(', ');
         const valueText = isMonthly ? `R$ ${formattedPrice}` : 'o valor combinado';
@@ -147,25 +146,28 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
   const getHeaderIcon = () => {
       if (type === 'gift') return <Gift className="w-6 h-6 text-red-600" />;
       if (type === 'new_sub') return <Rocket className="w-6 h-6 text-blue-600" />;
+      if (type === 'early_renewal') return <Calendar className="w-6 h-6 text-blue-600" />;
       return <Receipt className="w-6 h-6 text-green-700" />;
   };
 
   const getHeaderBg = () => {
       if (type === 'gift') return 'bg-red-100';
       if (type === 'new_sub') return 'bg-blue-100';
+      if (type === 'early_renewal') return 'bg-blue-100';
       return 'bg-green-100';
   };
 
   const getTitle = () => {
       if (type === 'gift') return 'Caixinha de Natal';
       if (type === 'new_sub') return `Assinar ${targetService || 'Serviço'}`;
+      if (type === 'early_renewal') return 'Adiantar Renovação';
       if (type === 'renewal' && targetService) return `Renovar ${targetService}`;
       return 'Pagamento / Renovação';
   };
 
   // Get benefits for new sub or single renewal
   let benefits: string[] = [];
-  if ((type === 'new_sub' || (type === 'renewal' && renewalList.length === 1))) {
+  if ((type === 'new_sub' || ((type === 'renewal' || type === 'early_renewal') && renewalList.length === 1))) {
       const svcName = renewalList[0] || targetService || '';
       const key = Object.keys(SERVICE_INFO).find(k => svcName.includes(k));
       if (key) benefits = SERVICE_INFO[key];
@@ -186,7 +188,7 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
                    {getTitle()}
                </h2>
                <p className="text-xs text-gray-500 font-medium">
-                   {type === 'gift' ? 'Contribua com o projeto' : (type === 'new_sub' ? 'Adicione ao seu plano' : 'Pix para renovação')}
+                   {type === 'gift' ? 'Contribua com o projeto' : (type === 'new_sub' ? 'Adicione ao seu plano' : (type === 'early_renewal' ? 'Garanta mais 30 dias' : 'Pix para renovação'))}
                </p>
              </div>
            </div>
@@ -198,11 +200,26 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
         {/* Content */}
         <div className="overflow-y-auto p-6 space-y-6">
           
+            {/* EARLY RENEWAL EXPLANATION */}
+            {type === 'early_renewal' && (
+                <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100 flex items-start gap-3">
+                    <ShieldCheck className="w-6 h-6 text-blue-600 flex-shrink-0 mt-1" />
+                    <div>
+                        <h4 className="font-bold text-blue-900 text-sm">Fique Tranquila!</h4>
+                        <p className="text-sm text-blue-700 leading-relaxed mt-1">
+                            Ao adiantar o pagamento, <strong>você não perde nenhum dia</strong> que ainda tem sobrando.
+                            <br/>
+                            Nós apenas acrescentamos <strong>+30 dias</strong> à sua data atual de vencimento.
+                        </p>
+                    </div>
+                </div>
+            )}
+
             {/* SINGLE ITEM SUMMARY (New Sub OR Single Renewal) */}
-            {(type === 'new_sub' || (type === 'renewal' && renewalList.length === 1)) && (
+            {(type === 'new_sub' || ((type === 'renewal' || type === 'early_renewal') && renewalList.length === 1)) && (
                 <div className="space-y-4">
                     {/* Benefits Card */}
-                    {benefits.length > 0 && (
+                    {benefits.length > 0 && type !== 'early_renewal' && (
                         <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100">
                             <p className="text-xs font-bold text-blue-800 uppercase mb-2 flex items-center">
                                 <Star className="w-3 h-3 mr-1" /> Vantagens Inclusas
@@ -228,9 +245,9 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
             )}
 
             {/* BUNDLE RENEWAL SUMMARY */}
-            {type === 'renewal' && renewalList.length > 1 && (
+            {(type === 'renewal' || type === 'early_renewal') && renewalList.length > 1 && (
                 <div className="space-y-4">
-                    {isUrgent && (
+                    {isUrgent && type === 'renewal' && (
                         <div className="bg-red-50 p-3 rounded-xl text-center border border-red-100">
                             <p className="text-xs text-red-700 font-bold">
                                 Atenção: Calculamos o valor apenas das assinaturas que venceram ou vencem em breve.
@@ -260,7 +277,7 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
                                     })}
                                 </ul>
                                 <div className="flex justify-between items-center pt-3 border-t-2 border-gray-100">
-                                    <span className="font-bold text-gray-600">Total Renovação</span>
+                                    <span className="font-bold text-gray-600">Total</span>
                                     <span className="font-extrabold text-3xl text-green-600">R$ {formattedPrice}</span>
                                 </div>
                             </>
@@ -347,7 +364,7 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
                      <MessageCircle className="w-5 h-5 mr-2" /> Enviar Comprovante
                   </button>
                   
-                  {type === 'renewal' && (
+                  {(type === 'renewal' || type === 'early_renewal') && (
                       <button 
                           onClick={handleSupport}
                           className="w-full text-xs text-gray-500 hover:text-primary-600 font-bold py-2 flex items-center justify-center gap-1 transition-colors"

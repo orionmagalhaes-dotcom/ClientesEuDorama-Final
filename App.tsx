@@ -28,7 +28,7 @@ const App: React.FC = () => {
   // Feature States
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
-  const [checkoutType, setCheckoutType] = useState<'renewal' | 'gift' | 'new_sub'>('renewal');
+  const [checkoutType, setCheckoutType] = useState<'renewal' | 'gift' | 'new_sub' | 'early_renewal'>('renewal');
   const [checkoutTargetService, setCheckoutTargetService] = useState<string | null>(null);
   const [toast, setToast] = useState<{message: string, type: 'success' | 'error'} | null>(null);
 
@@ -257,7 +257,7 @@ const App: React.FC = () => {
   };
 
   // --- PIX HANDLER ---
-  const handleOpenCheckout = (type: 'renewal' | 'gift' | 'new_sub', targetService?: string) => {
+  const handleOpenCheckout = (type: 'renewal' | 'gift' | 'new_sub' | 'early_renewal', targetService?: string) => {
     setCheckoutType(type);
     setCheckoutTargetService(targetService || null);
     setIsCheckoutOpen(true);
