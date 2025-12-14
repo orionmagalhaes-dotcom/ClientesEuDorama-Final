@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { AppCredential, ClientDBRow, User } from '../types';
 import { fetchCredentials, saveCredential, deleteCredential, getUsersCountForCredential, getClientsAssignedToCredential, getAssignedCredential } from '../services/credentialService';
 import { getAllClients, saveClientToDB, deleteClientFromDB, resetAllClientPasswords, verifyAdminLogin, getSystemConfig, saveSystemConfig, SystemConfig, getRotationalTestPassword, processUserLogin, supabase, createDemoClient } from '../services/clientService';
-import { Plus, Trash2, Edit2, LogOut, Eye, Users, Save, RefreshCw, Search, AlertTriangle, X, Check, ShieldAlert, TestTube, Unlock, Ban, Calendar, User as UserIcon, Sparkles, Clock, ArrowDownUp, ChevronDown, ChevronUp, Layers, ArrowUpAZ, Loader2, Key, Smartphone, AtSign, UserCheck, UserMinus } from 'lucide-react';
+import { Plus, Trash2, Edit2, LogOut, Eye, Users, Save, RefreshCw, Search, AlertTriangle, X, Check, ShieldAlert, TestTube, Unlock, Ban, Calendar, User as UserIcon, Sparkles, Clock, ArrowDownUp, ChevronDown, ChevronUp, Layers, ArrowUpAZ, Loader2, Key, Smartphone, AtSign, UserCheck, UserMinus, Monitor } from 'lucide-react';
 
 interface AdminPanelProps {
   onLogout: () => void;
@@ -84,8 +84,11 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [credDate, setCredDate] = useState(''); // New state for Date Editing
   const [bulkText, setBulkText] = useState(''); 
   
+  // State for Manual Credential Creation inside Client Modal
+  const [newManualCreds, setNewManualCreds] = useState<Record<string, {email: string, pass: string}>>({});
+
   const [clientForm, setClientForm] = useState<Partial<ClientDBRow>>({
-      phone_number: '', client_name: '', client_password: '', subscriptions: [], purchase_date: toLocalInput(new Date().toISOString()), duration_months: 1, is_debtor: false, override_expiration: false
+      phone_number: '', client_name: '', client_password: '', subscriptions: [], purchase_date: toLocalInput(new Date().toISOString()), duration_months: 1, is_debtor: false, override_expiration: false, manual_credentials: {}
   });
 
   useEffect(() => {
@@ -307,9 +310,42 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const handleSaveClient = async () => {
      if (!clientForm.phone_number) return alert('Telefone é obrigatório');
      setLoading(true);
-     const payload = { ...clientForm, purchase_date: toISO(clientForm.purchase_date as string) };
+     
+     // 1. Process any new "Manual" credentials created on the fly
+     const updatedManualCredentials = { ...(clientForm.manual_credentials || {}) };
+     
+     // Detect which services have "NEW_MANUAL" selected
+     for (const [svcName, credData] of Object.entries(newManualCreds)) {
+         if (updatedManualCredentials[svcName] === 'NEW_MANUAL') {
+             // Create real credential
+             const cData = credData as { email: string; pass: string };
+             const newCredId = await saveCredential({
+                 id: '',
+                 service: svcName,
+                 email: cData.email,
+                 password: cData.pass,
+                 publishedAt: new Date().toISOString(),
+                 isVisible: true
+             });
+             
+             if (newCredId) {
+                 updatedManualCredentials[svcName] = newCredId;
+             }
+         }
+     }
+
+     const payload = { 
+         ...clientForm, 
+         purchase_date: toISO(clientForm.purchase_date as string),
+         manual_credentials: updatedManualCredentials
+     };
+     
      const success = await saveClientToDB(payload);
-     if (success) { setClientModal({ open: false, isEdit: false }); await loadData(); }
+     if (success) { 
+         setClientModal({ open: false, isEdit: false }); 
+         setNewManualCreds({}); // Reset temporary state
+         await loadData(); 
+     }
      else alert('Erro ao salvar no banco de dados. Tente novamente.');
      setLoading(false);
   };
@@ -372,6 +408,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   };
 
   const handleOpenClientModal = (client?: ClientDBRow) => {
+    setNewManualCreds({}); // Clear temp state
     if (client) {
       setClientForm({
         id: client.id,
@@ -382,11 +419,12 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         purchase_date: toLocalInput(client.purchase_date),
         duration_months: client.duration_months,
         is_debtor: client.is_debtor,
-        override_expiration: client.override_expiration || false
+        override_expiration: client.override_expiration || false,
+        manual_credentials: client.manual_credentials || {}
       });
       setClientModal({ open: true, isEdit: true });
     } else {
-      setClientForm({ phone_number: '', client_name: '', client_password: '', subscriptions: [], purchase_date: toLocalInput(new Date().toISOString()), duration_months: 1, is_debtor: false, override_expiration: false });
+      setClientForm({ phone_number: '', client_name: '', client_password: '', subscriptions: [], purchase_date: toLocalInput(new Date().toISOString()), duration_months: 1, is_debtor: false, override_expiration: false, manual_credentials: {} });
       setClientModal({ open: true, isEdit: false });
     }
   };
@@ -414,9 +452,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
   // Sort named alphabetically
   namedClientsKeys.sort((a, b) => {
-      const nameA = groupedClients[a][0].client_name || '';
-      const nameB = groupedClients[b][0].client_name || '';
-      return nameA.localeCompare(nameB);
+      const nameA = groupedClients[b][0].client_name || '';
+      const nameB = groupedClients[a][0].client_name || '';
+      return nameB.localeCompare(nameA);
   });
 
   const togglePhoneExpand = (phone: string) => {
@@ -456,28 +494,21 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       setSelectedSearchClient(null); // Reset selection
       setRevealedLogins({});
       
-      // Filter clients that match the query
-      // REGRA DE DIFERENCIAÇÃO: Se os 4 últimos forem iguais, mas o número completo for diferente, eles aparecem como itens distintos.
       const matched = clients.filter(c => 
           !c.deleted && c.phone_number.includes(searchTabQuery)
       );
-      
       setSearchTabResults(matched);
   };
 
   const handleSelectSearchClient = async (dbRow: ClientDBRow) => {
       setSearchingLogins(true);
-      // Create User Object for the helper function (uses logic from clientService to process subscription strings)
       const { user } = processUserLogin([dbRow]);
       setSelectedSearchClient(user);
       
-      // Calculate credentials for each service
       if (user) {
           const newRevealed: Record<string, {email: string, pass: string}> = {};
           for (const service of user.services) {
-              // Get the clean service name (without dates)
               const cleanName = service.split('|')[0].trim();
-              // IMPORTANT: Pass 'clients' to reuse the loaded list and ensure correct index calculation
               const { credential } = await getAssignedCredential(user, cleanName, clients);
               if (credential) {
                   newRevealed[cleanName] = { email: credential.email, pass: credential.password };
@@ -488,6 +519,27 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           setRevealedLogins(newRevealed);
       }
       setSearchingLogins(false);
+  };
+
+  // --- HELPER: Credential Selection for Specific User ---
+  const handleManualCredChange = (serviceName: string, value: string) => {
+      setClientForm(prev => ({
+          ...prev,
+          manual_credentials: {
+              ...(prev.manual_credentials || {}),
+              [serviceName]: value // If value is empty string, it removes the override (back to auto)
+          }
+      }));
+  };
+
+  const updateNewManualCredData = (serviceName: string, field: 'email' | 'pass', val: string) => {
+      setNewManualCreds(prev => ({
+          ...prev,
+          [serviceName]: {
+              ...(prev[serviceName] || { email: '', pass: '' }),
+              [field]: val
+          }
+      }));
   };
 
   // --- RENDER HELPER FOR CLIENT CARD ---
@@ -732,175 +784,193 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             </div>
         )}
 
-        {/* TAB 3: SEARCH LOGINS (NEW) */}
+        {/* TAB 3: SEARCH LOGINS (RESTAURADO) */}
         {activeTab === 'search' && (
-            <div className="space-y-6">
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100">
-                    <div className="flex flex-col md:flex-row items-center gap-4">
-                        <div className="flex-1 w-full relative">
-                            <input 
-                                type="text" 
-                                placeholder="Digite o número (Ex: 1234 ou 11999991234)"
-                                className="w-full p-4 pl-12 rounded-xl bg-gray-50 border-2 border-gray-100 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none text-lg font-mono font-bold text-gray-700 transition-all"
-                                value={searchTabQuery}
-                                onChange={(e) => setSearchTabQuery(e.target.value.replace(/\D/g, ''))}
-                                onKeyDown={(e) => e.key === 'Enter' && handleExecuteSearch()}
-                            />
-                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
-                        </div>
-                        <button 
-                            onClick={handleExecuteSearch}
-                            className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-xl font-bold shadow-lg shadow-blue-200 transition-transform active:scale-95 w-full md:w-auto"
-                        >
-                            Buscar Login
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-6">
+                <div>
+                    <h3 className="font-bold text-gray-800 text-lg mb-4 flex items-center gap-2"><Key className="w-5 h-5 text-blue-600"/> Descobrir Login Atual</h3>
+                    <div className="flex gap-2">
+                        <input 
+                            type="text" 
+                            className="flex-1 bg-gray-50 border border-gray-200 rounded-xl p-4 font-mono text-lg font-bold"
+                            placeholder="Digite o telefone do cliente..."
+                            value={searchTabQuery}
+                            onChange={(e) => setSearchTabQuery(e.target.value)}
+                        />
+                        <button onClick={handleExecuteSearch} className="bg-blue-600 text-white px-8 rounded-xl font-bold hover:bg-blue-700 transition-colors">
+                            <Search className="w-6 h-6" />
                         </button>
                     </div>
                 </div>
 
-                {/* RESULTS LIST */}
-                {!selectedSearchClient && searchTabResults.length > 0 && (
-                    <div className="space-y-3">
-                        <p className="text-gray-500 font-bold text-sm px-2">Encontramos {searchTabResults.length} resultado(s):</p>
-                        {searchTabResults.map((client) => (
-                            <div key={client.id} onClick={() => handleSelectSearchClient(client)} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 hover:border-blue-400 hover:shadow-md cursor-pointer transition-all flex justify-between items-center group">
-                                <div className="flex items-center gap-4">
-                                    <div className="bg-blue-50 p-3 rounded-full group-hover:bg-blue-100 transition-colors">
-                                        <Smartphone className="w-6 h-6 text-blue-600" />
-                                    </div>
-                                    <div>
-                                        <h3 className="text-lg font-bold text-gray-900 font-mono">{client.phone_number}</h3>
-                                        <p className="text-sm text-gray-500">{client.client_name || 'Sem nome'} • {Array.isArray(client.subscriptions) ? client.subscriptions.length : 0} Assinaturas</p>
-                                    </div>
-                                </div>
-                                <ArrowDownUp className="w-5 h-5 text-gray-300 group-hover:text-blue-500 -rotate-90" />
-                            </div>
-                        ))}
+                {searchTabResults.length > 0 && (
+                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                        <p className="text-xs font-bold text-gray-400 uppercase mb-2">Resultados ({searchTabResults.length})</p>
+                        <div className="space-y-2">
+                            {searchTabResults.map(res => (
+                                <button 
+                                    key={res.id} 
+                                    onClick={() => handleSelectSearchClient(res)}
+                                    className={`w-full text-left p-3 rounded-lg flex justify-between items-center transition-all ${selectedSearchClient?.id === res.id ? 'bg-blue-100 border-blue-300 text-blue-900 shadow-sm' : 'bg-white hover:bg-gray-100 text-gray-700'}`}
+                                >
+                                    <span className="font-mono font-bold">{res.phone_number}</span>
+                                    <span className="text-xs opacity-60">{new Date(res.purchase_date).toLocaleDateString()}</span>
+                                </button>
+                            ))}
+                        </div>
                     </div>
                 )}
 
-                {!selectedSearchClient && searchTabResults.length === 0 && searchTabQuery && (
-                    <div className="text-center py-10 text-gray-400">
-                        Nenhum cliente encontrado com "{searchTabQuery}"
-                    </div>
-                )}
-
-                {/* SELECTED CLIENT DETAILS */}
                 {selectedSearchClient && (
-                    <div className="bg-white rounded-3xl shadow-xl overflow-hidden border-2 border-blue-50 animate-fade-in-up">
-                        <div className="bg-blue-600 p-6 text-white flex justify-between items-center">
-                            <div>
-                                <h2 className="text-2xl font-black">{selectedSearchClient.name}</h2>
-                                <p className="font-mono opacity-80 text-lg">{selectedSearchClient.phoneNumber}</p>
-                            </div>
-                            <button onClick={() => setSelectedSearchClient(null)} className="bg-white/20 hover:bg-white/30 p-2 rounded-full transition-colors">
-                                <X className="w-6 h-6" />
-                            </button>
-                        </div>
+                    <div className="bg-blue-50 p-6 rounded-2xl border-2 border-blue-100 animate-fade-in-up">
+                        <h4 className="font-black text-xl text-blue-900 mb-4 flex items-center gap-2"><Monitor className="w-6 h-6"/> Acessos Ativos</h4>
                         
-                        <div className="p-6">
-                            <h3 className="font-bold text-gray-700 mb-4 flex items-center"><Key className="w-5 h-5 mr-2 text-blue-500"/> Logins Atribuídos (Calculados Agora)</h3>
-                            
-                            {searchingLogins ? (
-                                <div className="py-10 text-center text-gray-400 flex flex-col items-center">
-                                    <Loader2 className="w-8 h-8 animate-spin mb-2" /> Calculando credenciais...
-                                </div>
-                            ) : (
-                                <div className="grid gap-4 md:grid-cols-2">
-                                    {selectedSearchClient.services.map(svc => {
-                                        const cleanName = svc.split('|')[0].trim();
-                                        const loginData = revealedLogins[cleanName];
-                                        
-                                        return (
-                                            <div key={svc} className="border border-gray-200 rounded-2xl p-4 bg-gray-50 hover:bg-white transition-colors hover:shadow-md">
-                                                <div className="flex justify-between items-start mb-3">
-                                                    <span className="font-bold text-gray-800 text-lg">{cleanName}</span>
-                                                    <span className={`text-[10px] font-bold px-2 py-1 rounded ${selectedSearchClient.isDebtor ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
-                                                        {selectedSearchClient.isDebtor ? 'BLOQUEADO' : 'ATIVO'}
-                                                    </span>
-                                                </div>
-                                                
-                                                {loginData ? (
-                                                    <div className="space-y-2 bg-white p-3 rounded-xl border border-gray-100">
-                                                        <div className="flex items-center gap-2">
-                                                            <AtSign className="w-4 h-4 text-gray-400" />
-                                                            <span className="font-mono text-sm font-bold text-blue-900 select-all">{loginData.email}</span>
-                                                        </div>
-                                                        <div className="flex items-center gap-2">
-                                                            <Key className="w-4 h-4 text-gray-400" />
-                                                            <span className="font-mono text-sm font-bold text-blue-900 select-all">{loginData.pass}</span>
-                                                        </div>
-                                                    </div>
-                                                ) : (
-                                                    <span className="text-xs text-gray-400 italic">Sem login atribuído</span>
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                                    {selectedSearchClient.services.length === 0 && (
-                                        <p className="text-gray-400 col-span-2 text-center py-4">Nenhuma assinatura ativa neste cliente.</p>
-                                    )}
-                                </div>
-                            )}
-                        </div>
+                        {searchingLogins ? (
+                            <div className="flex items-center gap-2 text-blue-600 font-bold"><Loader2 className="w-5 h-5 animate-spin" /> Calculando acessos...</div>
+                        ) : (
+                            <div className="grid gap-3">
+                                {Object.entries(revealedLogins).map(([svc, creds]) => (
+                                    <div key={svc} className="bg-white p-4 rounded-xl shadow-sm border border-blue-100 flex flex-col md:flex-row justify-between md:items-center gap-2">
+                                        <span className="font-bold text-gray-800 text-lg">{svc}</span>
+                                        <div className="flex flex-col md:text-right">
+                                            <span className="font-mono text-sm font-bold text-blue-600 select-all">{creds.email}</span>
+                                            <span className="font-mono text-xs text-gray-400 select-all">{creds.pass}</span>
+                                        </div>
+                                    </div>
+                                ))}
+                                {Object.keys(revealedLogins).length === 0 && <p className="text-gray-500 italic">Nenhum serviço ativo encontrado.</p>}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
         )}
 
-        {/* TAB 5: TEST USER */}
+        {/* TAB 4: TEST USER (RESTAURADO) */}
         {activeTab === 'test' && (
-             <div className="bg-white p-6 rounded-2xl shadow-sm border border-indigo-100">
-                 <div className="flex items-center gap-3 mb-6"><div className="bg-indigo-100 p-3 rounded-full"><TestTube className="w-6 h-6 text-indigo-600" /></div><div><h3 className="text-xl font-bold text-gray-900">Configurar Teste Grátis</h3><p className="text-sm text-gray-500">Defina o que os usuários de teste podem acessar.</p></div></div>
-                 
-                 {/* SENHA DO TESTE */}
-                 <div className="bg-indigo-50 p-6 rounded-2xl mb-6">
-                     <label className="text-xs text-indigo-500 font-bold uppercase mb-2 block">Senha de Teste</label>
-                     <p className="text-xs text-gray-400 mb-2">Se deixar o campo "Manual" vazio, o sistema usará a senha automática rotativa (cada 3 horas).</p>
-                     
-                     <div className="flex flex-col md:flex-row gap-4 mb-4">
-                         <div className="flex-1">
-                             <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">Rotativa (Automática)</p>
-                             <div className="text-2xl font-black text-gray-400 bg-white/50 px-4 py-2 rounded-xl border border-gray-200 uppercase select-all">{currentTestPass}</div>
-                         </div>
-                         <div className="flex-1">
-                             <p className="text-[10px] font-bold text-indigo-600 uppercase mb-1">Manual (Sua Escolha)</p>
-                             <input 
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-6">
+                <div className="bg-indigo-50 p-5 rounded-2xl border border-indigo-100">
+                    <h3 className="font-bold text-indigo-900 text-lg mb-2 flex items-center gap-2"><TestTube className="w-6 h-6"/> Configuração de Teste Grátis</h3>
+                    <p className="text-indigo-700 text-sm mb-4">O usuário <strong>00000000000</strong> é usado para testes automáticos de 1 hora.</p>
+                    
+                    <div className="bg-white p-4 rounded-xl border border-indigo-100 flex items-center justify-between mb-4">
+                        <div>
+                            <p className="text-xs font-bold text-gray-400 uppercase">Senha Rotativa Atual</p>
+                            <p className="text-2xl font-mono font-black text-indigo-600 tracking-widest">{currentTestPass}</p>
+                        </div>
+                        <div className="text-right">
+                            <p className="text-xs font-bold text-gray-400 uppercase">Expira em</p>
+                            <p className="text-sm font-bold text-gray-600">~60 min</p>
+                        </div>
+                    </div>
+
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-xs font-bold text-indigo-800 uppercase mb-2">Senha Fixa (Opcional - Substitui a rotativa)</label>
+                            <input 
                                 type="text" 
-                                className="w-full text-2xl font-black text-indigo-900 bg-white px-4 py-2 rounded-xl border-2 border-indigo-200 focus:ring-2 focus:ring-indigo-500 outline-none uppercase placeholder-indigo-200" 
-                                placeholder="AUTO"
+                                className="w-full bg-white border border-indigo-200 rounded-xl p-3 font-mono text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 outline-none"
+                                placeholder="Deixe vazio para usar a rotativa"
                                 value={manualTestPass}
-                                onChange={(e) => setManualTestPass(e.target.value.toUpperCase())}
-                             />
-                         </div>
-                     </div>
-                     <p className="text-xs text-gray-400 font-bold flex items-center"><Clock className="w-3 h-3 mr-1"/> O usuário de teste é o número: <span className="text-indigo-600 ml-1">00000000000</span> (ou 0000)</p>
-                 </div>
+                                onChange={e => setManualTestPass(e.target.value)}
+                            />
+                        </div>
 
-                 {/* SERVIÇOS PERMITIDOS */}
-                 <div className="space-y-4">
-                     <p className="font-bold text-gray-700">Serviços Liberados (Apenas 3 Opções):</p>
-                     <div className="flex flex-wrap gap-2">
-                         {TEST_ALLOWED_SERVICES.map(svc => (
-                             <button 
-                                key={svc} 
-                                onClick={() => toggleTestService(svc)} 
-                                className={`px-4 py-2 rounded-lg text-sm font-bold border-2 transition-all ${testServices.includes(svc) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-gray-500 border-gray-200'}`}
-                             >
-                                {svc} {testServices.includes(svc) && <Check className="w-4 h-4 inline ml-1" />}
-                             </button>
-                         ))}
-                     </div>
-                     <p className="text-xs text-gray-400 italic">Outros apps não podem ser testados gratuitamente.</p>
+                        <div>
+                            <label className="block text-xs font-bold text-indigo-800 uppercase mb-2">Serviços Liberados no Teste</label>
+                            <div className="flex flex-wrap gap-2">
+                                {TEST_ALLOWED_SERVICES.map(svc => (
+                                    <button 
+                                        key={svc} 
+                                        onClick={() => toggleTestService(svc)}
+                                        className={`px-4 py-2 rounded-lg text-sm font-bold border-2 transition-all ${testServices.includes(svc) ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500 border-gray-200'}`}
+                                    >
+                                        {svc} {testServices.includes(svc) && <Check className="w-3 h-3 inline ml-1" />}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
 
-                     <button onClick={handleUpdateTestServices} disabled={testUserLoading} className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-indigo-700 transition-colors flex items-center w-full justify-center mt-4">
-                        {testUserLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : 'Salvar Configuração no Banco de Dados'}
-                     </button>
-                 </div>
-             </div>
+                        <button 
+                            onClick={handleUpdateTestServices} 
+                            disabled={testUserLoading}
+                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl shadow-lg shadow-indigo-200 transition-all active:scale-95 flex justify-center"
+                        >
+                            {testUserLoading ? <Loader2 className="w-6 h-6 animate-spin" /> : 'Salvar Configuração de Teste'}
+                        </button>
+                    </div>
+                </div>
+            </div>
         )}
 
-        {/* ... DANGER ZONE ... */}
-        {activeTab === 'danger' && ( <div className="bg-red-50 p-6 rounded-2xl border-2 border-red-100"> <div className="flex items-center gap-3 mb-6"><div className="bg-red-100 p-3 rounded-full"><ShieldAlert className="w-8 h-8 text-red-600" /></div><div><h2 className="text-2xl font-black text-red-900">Zona de Perigo</h2><p className="text-red-700">Ações irreversíveis.</p></div></div> <div className="bg-white p-6 rounded-xl border border-red-200 shadow-sm"><h3 className="font-bold text-lg text-gray-900 mb-2">Resetar TODAS as Senhas</h3><p className="text-sm text-gray-500 mb-4">Isso removerá a senha definida por todos os clientes.</p>{nuclearStep === 0 && <button onClick={() => setNuclearStep(1)} className="bg-red-600 text-white font-bold py-3 px-6 rounded-xl hover:bg-red-700">Iniciar Reset Geral</button>}{nuclearStep === 1 && (<div className="space-y-3 animate-fade-in"><p className="font-bold text-red-600">Digite "CONFIRMAR":</p><input type="text" className="w-full border-2 border-red-300 rounded-lg p-2 font-bold text-red-900 uppercase" value={nuclearInput} onChange={e => setNuclearInput(e.target.value.toUpperCase())} />{nuclearInput === 'CONFIRMAR' && (<><p className="font-bold text-gray-700 mt-2">Senha ADMIN:</p><input type="password" className="w-full border-2 border-gray-300 rounded-lg p-2" value={adminPassInput} onChange={e => setAdminPassInput(e.target.value)} /><div className="flex gap-3 mt-4"><button onClick={() => setNuclearStep(0)} className="bg-gray-200 text-gray-800 font-bold py-2 px-4 rounded-lg">Cancelar</button><button onClick={handleNuclearReset} disabled={nuclearLoading} className="bg-red-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-red-700 flex items-center">{nuclearLoading ? <RefreshCw className="w-4 h-4 animate-spin mr-2"/> : <Ban className="w-4 h-4 mr-2"/>} EXECUTAR RESET</button></div></>)}</div>)}</div></div> )}
+        {/* TAB 5: DANGER (RESTAURADO) */}
+        {activeTab === 'danger' && (
+            <div className="space-y-6">
+                {/* SYSTEM CONFIG */}
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-orange-200">
+                    <h3 className="font-bold text-orange-900 text-lg mb-4 flex items-center gap-2"><ShieldAlert className="w-6 h-6"/> Configuração do Sistema</h3>
+                    
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Texto do Banner (Aviso Geral)</label>
+                            <input type="text" className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3" value={sysConfig.bannerText} onChange={e => setSysConfig({...sysConfig, bannerText: e.target.value})} placeholder="Ex: Manutenção programada..." />
+                        </div>
+                        <div className="flex gap-4">
+                            <div className="flex-1">
+                                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Tipo de Banner</label>
+                                <select className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3" value={sysConfig.bannerType} onChange={e => setSysConfig({...sysConfig, bannerType: e.target.value as any})}>
+                                    <option value="info">Azul (Info)</option>
+                                    <option value="warning">Amarelo (Atenção)</option>
+                                    <option value="error">Vermelho (Erro)</option>
+                                    <option value="success">Verde (Sucesso)</option>
+                                </select>
+                            </div>
+                            <div className="flex items-end pb-3">
+                                <label className="flex items-center cursor-pointer gap-2">
+                                    <input type="checkbox" checked={sysConfig.bannerActive} onChange={e => setSysConfig({...sysConfig, bannerActive: e.target.checked})} className="w-5 h-5 text-orange-600 rounded focus:ring-orange-500" />
+                                    <span className="font-bold text-gray-700">Ativar Banner</span>
+                                </label>
+                            </div>
+                        </div>
+                        <button onClick={handleSaveSystemConfig} className="bg-orange-600 text-white px-6 py-3 rounded-xl font-bold w-full hover:bg-orange-700 transition-colors shadow-lg shadow-orange-100">Salvar Configuração</button>
+                    </div>
+                </div>
+
+                {/* NUCLEAR RESET */}
+                <div className="bg-red-50 p-6 rounded-2xl border-2 border-red-200">
+                    <h3 className="font-black text-red-900 text-xl mb-2 flex items-center gap-2"><Ban className="w-6 h-6"/> ZONA DE PERIGO</h3>
+                    <p className="text-red-700 mb-6 text-sm">Ações irreversíveis. Cuidado.</p>
+
+                    {nuclearStep === 0 && (
+                        <button onClick={() => setNuclearStep(1)} className="bg-red-600 text-white px-6 py-4 rounded-xl font-bold w-full hover:bg-red-700 shadow-lg shadow-red-200 transition-transform active:scale-95">
+                            RESETAR TODAS AS SENHAS DE CLIENTES
+                        </button>
+                    )}
+
+                    {nuclearStep === 1 && (
+                        <div className="space-y-4 animate-fade-in">
+                            <p className="font-bold text-red-800">Tem certeza? Todos os clientes perderão o acesso até criarem nova senha.</p>
+                            <input type="text" placeholder='Digite "DELETAR" para confirmar' className="w-full border-2 border-red-300 p-3 rounded-xl bg-white text-red-900 font-bold" value={nuclearInput} onChange={e => setNuclearInput(e.target.value)} />
+                            {nuclearInput === 'DELETAR' && (
+                                <button onClick={() => setNuclearStep(2)} className="bg-red-900 text-white px-6 py-3 rounded-xl font-bold w-full">Continuar</button>
+                            )}
+                            <button onClick={() => setNuclearStep(0)} className="text-red-600 underline text-sm w-full text-center">Cancelar</button>
+                        </div>
+                    )}
+
+                    {nuclearStep === 2 && (
+                        <div className="space-y-4 animate-fade-in">
+                            <p className="font-bold text-red-800">Confirmação Final: Digite sua senha de Admin</p>
+                            <input type="password" placeholder='Senha do Admin' className="w-full border-2 border-red-300 p-3 rounded-xl bg-white text-red-900 font-bold" value={adminPassInput} onChange={e => setAdminPassInput(e.target.value)} />
+                            <button onClick={handleNuclearReset} disabled={nuclearLoading} className="bg-black text-white px-6 py-4 rounded-xl font-bold w-full flex justify-center">
+                                {nuclearLoading ? <Loader2 className="w-6 h-6 animate-spin"/> : 'EXECUTAR RESET'}
+                            </button>
+                            <button onClick={() => setNuclearStep(0)} className="text-gray-500 underline text-sm w-full text-center">Cancelar</button>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
         
         {/* ... CLIENT MODAL ... */}
         {clientModal.open && (
@@ -927,7 +997,73 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                             </div>
                         </div>
                         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100"><p className="text-xs text-blue-800 font-bold mb-1">💡 Dica de Mestre:</p><p className="text-xs text-blue-700">Para clientes que compraram assinaturas em <strong>datas diferentes</strong>, digite o nome do app seguido de | e a data (AAAA-MM-DD). Exemplo: <strong>Viki Pass|2025-11-05</strong></p></div>
-                        <div><label className="block text-xs font-bold text-gray-500 uppercase mb-2">Serviços Contratados</label><div className="flex flex-wrap gap-2">{SERVICES.map(svc => <button key={svc} type="button" onClick={() => toggleServiceInForm(svc)} className={`px-4 py-2 rounded-lg text-xs font-bold border-2 transition-all ${clientForm.subscriptions?.some(s => s.startsWith(svc)) ? 'bg-primary-600 text-white border-primary-600 shadow-md' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>{svc} {clientForm.subscriptions?.some(s => s.startsWith(svc)) && <Check className="w-3 h-3 inline ml-1" />}</button>)}</div></div>
+                        
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Serviços Contratados</label>
+                            <div className="flex flex-wrap gap-2 mb-4">{SERVICES.map(svc => <button key={svc} type="button" onClick={() => toggleServiceInForm(svc)} className={`px-4 py-2 rounded-lg text-xs font-bold border-2 transition-all ${clientForm.subscriptions?.some(s => s.startsWith(svc)) ? 'bg-primary-600 text-white border-primary-600 shadow-md' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>{svc} {clientForm.subscriptions?.some(s => s.startsWith(svc)) && <Check className="w-3 h-3 inline ml-1" />}</button>)}</div>
+                            
+                            {/* CREDENTIAL ASSIGNMENT SECTION */}
+                            {(clientForm.subscriptions && clientForm.subscriptions.length > 0) && (
+                                <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 mt-2 space-y-4">
+                                    <h4 className="text-xs font-bold text-gray-500 uppercase flex items-center"><Monitor className="w-3 h-3 mr-1"/> Atribuição de Login (Opcional)</h4>
+                                    
+                                    {clientForm.subscriptions.map(rawSvc => {
+                                        const cleanSvc = rawSvc.split('|')[0];
+                                        const currentManual = clientForm.manual_credentials?.[cleanSvc] || '';
+                                        
+                                        // Filter credentials for this service
+                                        const availableCreds = credentials.filter(c => c.service.toLowerCase().includes(cleanSvc.toLowerCase()));
+
+                                        return (
+                                            <div key={cleanSvc} className="bg-white border border-gray-200 rounded-lg p-3">
+                                                <div className="flex justify-between items-center mb-2">
+                                                    <span className="font-bold text-gray-800 text-sm">{cleanSvc}</span>
+                                                    <span className="text-[10px] text-gray-400 font-bold uppercase">{currentManual === 'NEW_MANUAL' ? 'Criando Novo...' : (currentManual ? 'Manual' : 'Automático')}</span>
+                                                </div>
+                                                
+                                                <select 
+                                                    className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs font-bold text-gray-700 outline-none focus:border-primary-300"
+                                                    value={currentManual}
+                                                    onChange={(e) => handleManualCredChange(cleanSvc, e.target.value)}
+                                                >
+                                                    <option value="">⚡ Automático (Recomendado)</option>
+                                                    <option value="NEW_MANUAL">➕ Criar Novo Manualmente...</option>
+                                                    <optgroup label="Contas Existentes">
+                                                        {availableCreds.map(c => (
+                                                            <option key={c.id} value={c.id}>
+                                                                {c.email} (Ativa há {getDaysActive(c.publishedAt)}d)
+                                                            </option>
+                                                        ))}
+                                                    </optgroup>
+                                                </select>
+
+                                                {/* UI FOR NEW MANUAL ENTRY */}
+                                                {currentManual === 'NEW_MANUAL' && (
+                                                    <div className="mt-2 space-y-2 border-t border-gray-100 pt-2 animate-fade-in">
+                                                        <input 
+                                                            type="email" 
+                                                            placeholder="Email da Nova Conta" 
+                                                            className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-xs"
+                                                            value={((newManualCreds[cleanSvc] as { email: string, pass: string } | undefined) || { email: '', pass: '' }).email}
+                                                            onChange={(e) => updateNewManualCredData(cleanSvc, 'email', e.target.value)}
+                                                        />
+                                                        <input 
+                                                            type="text" 
+                                                            placeholder="Senha da Nova Conta" 
+                                                            className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-xs"
+                                                            value={((newManualCreds[cleanSvc] as { email: string, pass: string } | undefined) || { email: '', pass: '' }).pass}
+                                                            onChange={(e) => updateNewManualCredData(cleanSvc, 'pass', e.target.value)}
+                                                        />
+                                                        <p className="text-[10px] text-orange-500 font-bold">⚠️ Será salva nas credenciais gerais.</p>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+
                         <div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center"><Clock className="w-3 h-3 mr-1" /> Data Início (Geral)</label><input type="datetime-local" className="w-full bg-gray-50 text-gray-900 border-0 rounded-xl p-3.5 font-mono text-sm" value={clientForm.purchase_date} onChange={e => setClientForm({...clientForm, purchase_date: e.target.value})} /></div><div><label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center"><Calendar className="w-3 h-3 mr-1" /> Plano (Duração)</label><select className="w-full bg-gray-50 text-gray-900 border-0 rounded-xl p-3.5 focus:ring-2 focus:ring-primary-500 font-bold" value={clientForm.duration_months} onChange={e => setClientForm({...clientForm, duration_months: parseInt(e.target.value)})}> <option value={1}>1 Mês (Mensal)</option> <option value={2}>2 Meses</option> <option value={3}>3 Meses (Trimestral)</option> <option value={6}>6 Meses (Semestral)</option> <option value={12}>1 Ano (Anual)</option> <option value={999}>Vitalício / Demo</option> </select></div></div>
                         <div className="space-y-3"><div className="flex items-center gap-3 p-4 bg-red-50 rounded-xl border border-red-100 cursor-pointer hover:bg-red-100 transition-colors" onClick={() => setClientForm({...clientForm, is_debtor: !clientForm.is_debtor})}><div className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${clientForm.is_debtor ? 'bg-red-600 border-red-600' : 'bg-white border-red-200'}`}> {clientForm.is_debtor && <Check className="w-4 h-4 text-white" />} </div><span className="text-red-900 font-bold text-sm">Cliente Inadimplente (Bloquear Acesso)</span></div><div className="flex items-center gap-3 p-4 bg-yellow-50 rounded-xl border border-yellow-100 cursor-pointer hover:bg-yellow-100 transition-colors" onClick={() => setClientForm({...clientForm, override_expiration: !clientForm.override_expiration})}><div className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${clientForm.override_expiration ? 'bg-yellow-500 border-yellow-500' : 'bg-white border-yellow-200'}`}> {clientForm.override_expiration && <Check className="w-4 h-4 text-white" />} </div><div><span className="text-yellow-900 font-bold text-sm block">Liberar Acesso (Vencido)</span></div></div></div>
                         <button onClick={handleSaveClient} className="w-full bg-gray-900 text-white font-bold py-4 rounded-xl hover:bg-black flex justify-center items-center shadow-lg mt-2"> {loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : 'Salvar no Banco de Dados'} </button>
@@ -936,102 +1072,39 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             </div>
         )}
 
-        {/* --- VIEW USERS MODAL (NOVO) --- */}
-        {viewUsersModal.open && viewUsersModal.cred && (
-            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[80vh] animate-fade-in-up">
-                    {/* Header */}
-                    <div className="p-6 border-b border-gray-100 flex justify-between items-start bg-gray-50 rounded-t-3xl">
-                        <div>
-                            <h3 className="text-xl font-black text-gray-900">Usuários Vinculados</h3>
-                            <div className="mt-2 flex flex-col gap-1">
-                                <span className="text-sm font-bold text-primary-600 bg-primary-50 px-2 py-1 rounded-lg w-fit">
-                                    {viewUsersModal.cred.service}
-                                </span>
-                                <span className="text-xs font-mono text-gray-500">
-                                    {viewUsersModal.cred.email}
-                                </span>
-                            </div>
-                        </div>
-                        <button 
-                            onClick={() => setViewUsersModal({ ...viewUsersModal, open: false })}
-                            className="p-2 bg-white rounded-full hover:bg-gray-200 transition-colors shadow-sm"
-                        >
-                            <X className="w-5 h-5 text-gray-500" />
-                        </button>
+        {/* ... (VIEW USERS AND DELETE MODALS) ... */}
+        {viewUsersModal.open && (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 max-h-[80vh] flex flex-col">
+                    <div className="flex justify-between items-center mb-4 border-b border-gray-100 pb-4">
+                        <h3 className="font-bold text-gray-800 text-lg">Usuários nesta Conta</h3>
+                        <button onClick={() => setViewUsersModal({open: false, users: [], cred: null})}><X className="w-6 h-6 text-gray-400"/></button>
                     </div>
-
-                    {/* List */}
-                    <div className="p-6 overflow-y-auto">
+                    <div className="flex-1 overflow-y-auto space-y-2 pr-2">
                         {viewUsersModal.users.length === 0 ? (
-                            <p className="text-center text-gray-400 py-10">Nenhum usuário usando esta conta no momento.</p>
+                            <p className="text-center text-gray-400 py-10">Nenhum usuário alocado automaticamente.</p>
                         ) : (
-                            <div className="grid gap-3">
-                                {viewUsersModal.users.map(u => (
-                                    <div key={u.id} className="flex items-center justify-between p-4 bg-white border border-gray-100 rounded-2xl shadow-sm hover:border-primary-200 transition-colors">
-                                        <div className="flex items-center gap-4">
-                                            <div className="bg-gray-100 p-3 rounded-full">
-                                                <UserIcon className="w-5 h-5 text-gray-600" />
-                                            </div>
-                                            <div>
-                                                <p className="font-bold text-gray-900">{u.client_name || 'Sem Nome'}</p>
-                                                <p className="text-xs font-mono text-gray-500">{u.phone_number}</p>
-                                            </div>
-                                        </div>
-                                        <div className="text-right">
-                                            <span className="block text-[10px] font-bold uppercase text-gray-400">Comprou em</span>
-                                            <span className="text-sm font-bold text-gray-700">
-                                                {new Date(u.purchase_date).toLocaleDateString('pt-BR')}
-                                            </span>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
+                            viewUsersModal.users.map((u, i) => (
+                                <div key={i} className="flex justify-between items-center p-3 bg-gray-50 rounded-xl">
+                                    <span className="font-mono font-bold text-gray-700">{u.phone_number}</span>
+                                    {u.client_name && <span className="text-xs text-gray-500">{u.client_name}</span>}
+                                </div>
+                            ))
                         )}
-                    </div>
-                    
-                    {/* Footer */}
-                    <div className="p-4 border-t border-gray-100 bg-gray-50 rounded-b-3xl text-center">
-                        <p className="text-xs text-gray-400">Total: {viewUsersModal.users.length} usuários nesta conta.</p>
                     </div>
                 </div>
             </div>
         )}
 
-        {/* --- DELETE MODAL (FIXED) --- */}
         {deleteModal.open && (
-            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl animate-bounce-in border-t-8 border-red-500">
-                    <div className="flex flex-col items-center text-center space-y-4">
-                        <div className="bg-red-100 p-4 rounded-full">
-                            <Trash2 className="w-10 h-10 text-red-600" />
-                        </div>
-                        
-                        <h3 className="text-xl font-extrabold text-gray-900">
-                            Confirmar Exclusão
-                        </h3>
-                        <p className="text-gray-600 text-sm">
-                            {deleteModal.type === 'credential' ? 'Você vai apagar esta credencial. Os clientes vinculados perderão o acesso.' : 'Você vai remover este cliente do banco de dados.'}
-                            <br/>
-                            <span className="font-bold text-red-600">Essa ação é permanente.</span>
-                        </p>
-
-                        <div className="flex gap-3 w-full pt-2">
-                            <button 
-                                onClick={() => setDeleteModal({ ...deleteModal, open: false })}
-                                disabled={isDeleting}
-                                className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 rounded-xl hover:bg-gray-300 transition-colors text-sm"
-                            >
-                                Cancelar
-                            </button>
-                            <button 
-                                onClick={confirmDelete}
-                                disabled={isDeleting}
-                                className="flex-1 bg-red-600 text-white font-bold py-3 rounded-xl hover:bg-red-700 transition-colors flex justify-center items-center shadow-lg text-sm"
-                            >
-                                {isDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Sim, Apagar"}
-                            </button>
-                        </div>
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 text-center">
+                    <div className="bg-red-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><Trash2 className="w-8 h-8 text-red-600" /></div>
+                    <h3 className="font-extrabold text-xl text-gray-900 mb-2">Excluir {deleteModal.type === 'credential' ? 'Credencial' : 'Cliente'}?</h3>
+                    <p className="text-gray-500 text-sm mb-6">Essa ação não pode ser desfeita.</p>
+                    <div className="flex gap-3">
+                        <button onClick={() => setDeleteModal({...deleteModal, open: false})} className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 rounded-xl">Cancelar</button>
+                        <button onClick={confirmDelete} disabled={isDeleting} className="flex-1 bg-red-600 text-white font-bold py-3 rounded-xl flex justify-center items-center">{isDeleting ? <Loader2 className="w-5 h-5 animate-spin"/> : 'Sim, Excluir'}</button>
                     </div>
                 </div>
             </div>

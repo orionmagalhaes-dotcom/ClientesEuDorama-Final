@@ -486,7 +486,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenSupport, onOpenChecko
                               <div>
                                   <p className="text-[10px] font-bold text-blue-400 uppercase mb-1">Email / Login</p>
                                   <div className="flex gap-2">
-                                      <div className="bg-white px-3 py-2 rounded-xl flex-1 border border-blue-100 text-lg font-mono font-bold text-gray-700 truncate select-all">{selectedService.credential.email}</div>
+                                      <div className="bg-white px-3 py-2 rounded-xl flex-1 border border-blue-100 text-lg font-mono font-bold text-gray-700 select-all break-all">{selectedService.credential.email}</div>
                                       <button onClick={() => copyToClipboard(selectedService.credential.email, 'email')} className="bg-white p-2 rounded-xl border border-blue-100 hover:bg-blue-100 text-blue-600 transition-colors">
                                           {copiedId === 'email' ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}
                                       </button>
@@ -686,8 +686,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenSupport, onOpenChecko
                                 <div className="space-y-3 relative z-10">
                                     {/* Email */}
                                     <div className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-100 hover:border-indigo-200 transition-colors">
-                                        <span className="text-lg font-mono text-gray-800 truncate max-w-[200px] select-all font-bold">{item.cred.email}</span>
-                                        <button onClick={() => copyToClipboard(item.cred!.email, `email-${idx}`)} className="text-indigo-500 p-2 hover:bg-indigo-50 rounded-lg transition-colors">
+                                        <span className="text-lg font-mono text-gray-800 break-all select-all font-bold">{item.cred.email}</span>
+                                        <button onClick={() => copyToClipboard(item.cred!.email, `email-${idx}`)} className="text-indigo-500 p-2 hover:bg-indigo-50 rounded-lg transition-colors ml-2">
                                             {copiedId === `email-${idx}` ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}
                                         </button>
                                     </div>

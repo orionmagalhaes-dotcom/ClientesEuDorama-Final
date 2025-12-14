@@ -34,20 +34,6 @@ export const addLocalDorama = (phoneNumber: string, type: 'watching' | 'favorite
 // --- FUNÇÕES DE CLIENTE ---
 
 /**
- * Atualiza o timestamp da última atividade do usuário no banco
- */
-export const updateLastActive = async (phoneNumber: string): Promise<void> => {
-    try {
-        await supabase
-            .from('clients')
-            .update({ last_active_at: new Date().toISOString() })
-            .eq('phone_number', phoneNumber);
-    } catch (e) {
-        console.error('Erro ao atualizar status online:', e);
-    }
-};
-
-/**
  * Busca TODOS os clientes (necessário para o algoritmo de distribuição de senhas e painel admin)
  */
 export const getAllClients = async (): Promise<ClientDBRow[]> => {
@@ -82,30 +68,33 @@ export const getTestUser = async (): Promise<{ user: User | null, error: string 
 
 /**
  * Verifica se o usuário existe e se já tem senha configurada.
- * Retorna lista de correspondências para desambiguação.
  */
 export const checkUserStatus = async (lastFourDigits: string): Promise<{ 
   exists: boolean; 
-  matches: { phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }[];
+  matches: { phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }[] 
 }> => {
   try {
     if (!supabase) return { exists: false, matches: [] };
 
     const { data, error } = await supabase
       .from('clients')
-      .select('phone_number, client_password, client_name, profile_image, deleted')
+      .select('phone_number, client_password, deleted, client_name, profile_image')
       .like('phone_number', `%${lastFourDigits}`);
 
     if (error || !data || data.length === 0) {
       // Fallback Mock
-      const foundMock = MOCK_DB_CLIENTS.filter(c => c.phone_number.endsWith(lastFourDigits) && !c.deleted);
+      const foundMock = MOCK_DB_CLIENTS.filter(c => c.phone_number.endsWith(lastFourDigits));
       if (foundMock.length > 0) {
-         const matches = foundMock.map(c => ({
-             phoneNumber: c.phone_number,
-             hasPassword: !!(c.client_password && c.client_password.trim()),
-             name: c.client_name
-         }));
-         return { exists: true, matches };
+         if (foundMock[0].deleted) return { exists: false, matches: [] };
+         return { 
+             exists: true, 
+             matches: [{
+                 phoneNumber: foundMock[0].phone_number,
+                 hasPassword: false, 
+                 name: foundMock[0].client_name,
+                 photo: foundMock[0].profile_image
+             }] 
+         };
       }
       return { exists: false, matches: [] };
     }
@@ -117,32 +106,20 @@ export const checkUserStatus = async (lastFourDigits: string): Promise<{
        return { exists: false, matches: [] };
     }
 
-    // Agrupa matches por número de telefone (para evitar duplicatas se o mesmo número tiver múltiplas entradas de compras)
-    const uniqueMap = new Map<string, { phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }>();
-
-    activeClients.forEach(row => {
-        const phone = row.phone_number;
-        const hasPass = !!(row.client_password && row.client_password.trim() !== '');
-        
-        if (!uniqueMap.has(phone)) {
-            uniqueMap.set(phone, {
-                phoneNumber: phone,
-                hasPassword: hasPass,
-                name: row.client_name,
-                photo: row.profile_image
+    const matchesMap = new Map<string, { phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }>();
+    
+    activeClients.forEach(c => {
+        if (!matchesMap.has(c.phone_number)) {
+            matchesMap.set(c.phone_number, {
+                phoneNumber: c.phone_number,
+                hasPassword: !!(c.client_password && c.client_password.trim() !== ''),
+                name: c.client_name,
+                photo: c.profile_image
             });
-        } else {
-            // Se já existe, atualiza se encontrar uma senha ou um nome melhor
-            const existing = uniqueMap.get(phone)!;
-            if (hasPass && !existing.hasPassword) existing.hasPassword = true;
-            if (row.client_name && !existing.name) existing.name = row.client_name;
-            if (row.profile_image && !existing.photo) existing.photo = row.profile_image;
         }
     });
 
-    const matches = Array.from(uniqueMap.values());
-
-    return { exists: true, matches };
+    return { exists: true, matches: Array.from(matchesMap.values()) };
 
   } catch (e) {
     console.error(e);
@@ -167,6 +144,7 @@ export const registerClientPassword = async (phoneNumber: string, password: stri
     }
 
     if (!data || data.length === 0) {
+      console.warn("Nenhum registro atualizado. Verifique RLS ou número de telefone.");
       return false;
     }
 
@@ -179,7 +157,6 @@ export const registerClientPassword = async (phoneNumber: string, password: stri
 
 /**
  * Tenta fazer login validando a senha
- * ATUALIZADO: Procura a senha em QUALQUER registro do usuário, não apenas no primeiro.
  */
 export const loginWithPassword = async (phoneNumber: string, password: string): Promise<{ user: User | null, error: string | null }> => {
   try {
@@ -192,102 +169,24 @@ export const loginWithPassword = async (phoneNumber: string, password: string): 
       return { user: null, error: 'Usuário não encontrado.' };
     }
 
-    const allRecords = data as unknown as ClientDBRow[];
+    // Verifica senha
+    const clientData = data[0] as unknown as ClientDBRow;
     
-    // Verifica se todos foram deletados
-    const activeRecords = allRecords.filter(r => !r.deleted);
-    if (activeRecords.length === 0) {
+    // Verifica se foi deletado
+    if (clientData.deleted) {
       return { user: null, error: 'Acesso revogado. Entre em contato com o suporte.' };
     }
 
-    // LÓGICA DE SENHA PARA USUÁRIO DE TESTE (Híbrida: Manual ou Automática)
-    if (phoneNumber === '00000000000') {
-        const autoPass = getRotationalTestPassword();
-        const dbPassRecord = allRecords.find(r => r.client_password && r.client_password.trim() !== '');
-        const dbPass = dbPassRecord ? dbPassRecord.client_password : '';
-        const inputPass = String(password).trim().toUpperCase();
-
-        if ((dbPass && String(password).trim() === dbPass) || (inputPass === autoPass)) {
-             return processUserLogin(allRecords);
-        }
-        return { user: null, error: 'Senha de teste incorreta.' };
+    // Comparação simples
+    if (String(clientData.client_password).trim() !== String(password).trim()) {
+      return { user: null, error: 'Senha incorreta.' };
     }
 
-    // --- LÓGICA DE LOGIN COM CORREÇÃO DE INCONSISTÊNCIA ---
-    
-    // 1. Encontra a senha "Mestra" (A senha que existe em qualquer um dos registros)
-    const masterRecord = allRecords.find(r => r.client_password && r.client_password.trim() !== '');
-    const correctPassword = masterRecord ? masterRecord.client_password : null;
-
-    // 2. Valida a senha digitada
-    if (!correctPassword || String(correctPassword).trim() !== String(password).trim()) {
-        // Se a senha estiver errada OU se o usuário nunca definiu senha em nenhum registro
-        return { user: null, error: 'Senha incorreta.' };
-    }
-
-    // 3. AUTO-CORREÇÃO (Backfill): Se a senha está correta, verifique se existem registros SEM senha
-    // Isso resolve o problema de compras novas (sem senha) coexistindo com antigas (com senha)
-    const recordsMissingPassword = allRecords.filter(r => !r.client_password || r.client_password.trim() === '');
-    
-    if (recordsMissingPassword.length > 0) {
-        console.log(`[Auto-Fix] Aplicando senha encontrada a ${recordsMissingPassword.length} registros antigos/novos sem senha.`);
-        // Executa em "background" sem travar o login do usuário
-        const idsToUpdate = recordsMissingPassword.map(r => r.id);
-        supabase
-            .from('clients')
-            .update({ client_password: correctPassword })
-            .in('id', idsToUpdate)
-            .then(({ error }) => {
-                if (error) console.error("Erro ao auto-corrigir senhas:", error);
-            });
-    }
-
-    // ATUALIZA STATUS ONLINE NO LOGIN
-    updateLastActive(phoneNumber);
-
-    return processUserLogin(allRecords);
+    return processUserLogin(data as unknown as ClientDBRow[]);
 
   } catch (e) {
-    console.error('Erro login:', e);
-    return { user: null, error: 'Erro de conexão. Verifique sua internet.' };
+    return { user: null, error: 'Erro de conexão.' };
   }
-};
-
-/**
- * REFRESH USER PROFILE (Atualizar Dados)
- * Recarrega os dados do usuário, aplicando correções de senha se necessário, sem exigir login.
- */
-export const refreshUserProfile = async (phoneNumber: string): Promise<{ user: User | null, error: string | null }> => {
-    try {
-        const { data, error } = await supabase
-            .from('clients')
-            .select('*')
-            .eq('phone_number', phoneNumber);
-
-        if (error || !data || data.length === 0) {
-            return { user: null, error: 'Erro ao sincronizar. Verifique a conexão.' };
-        }
-
-        const allRecords = data as unknown as ClientDBRow[];
-        
-        // --- APLICAR CORREÇÃO DE SENHA (SELF-HEALING) NO REFRESH TAMBÉM ---
-        const masterRecord = allRecords.find(r => r.client_password && r.client_password.trim() !== '');
-        const correctPassword = masterRecord ? masterRecord.client_password : null;
-
-        if (correctPassword) {
-            const recordsMissingPassword = allRecords.filter(r => !r.client_password || r.client_password.trim() === '');
-            if (recordsMissingPassword.length > 0) {
-                console.log(`[Auto-Fix Refresh] Sincronizando ${recordsMissingPassword.length} registros.`);
-                const idsToUpdate = recordsMissingPassword.map(r => r.id);
-                // Atualiza e não espera para retornar a UI mais rápido (Optimistic)
-                supabase.from('clients').update({ client_password: correctPassword }).in('id', idsToUpdate);
-            }
-        }
-
-        return processUserLogin(allRecords);
-    } catch (e) {
-        return { user: null, error: 'Erro de conexão.' };
-    }
 };
 
 // Auxiliar para processar os dados brutos e retornar o objeto User
@@ -301,7 +200,6 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
     let maxExpiryTime = 0;
     let isDebtorAny = false;
     let overrideAny = false;
-    let clientName = userRows[0].client_name || "Dorameira";
 
     // Verificar se a melhor conta (mais recente) está deletada
     const hasActiveAccount = userRows.some(row => !row.deleted);
@@ -310,9 +208,7 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
     }
 
     userRows.forEach(row => {
-      if (row.deleted) return; 
-
-      if (row.client_name) clientName = row.client_name;
+      if (row.deleted) return; // Pula registros deletados no processamento
 
       let subs: string[] = [];
       if (Array.isArray(row.subscriptions)) {
@@ -355,10 +251,13 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
     const combinedServices = Array.from(allServices);
     const localData = getLocalUserData(primaryPhone);
     const gameProgress = bestRow.game_progress || {};
+    
+    // Map manual credentials from the best/most recent row
+    const manualCreds = bestRow.manual_credentials || {};
 
     const appUser: User = {
       id: bestRow.id,
-      name: clientName, 
+      name: bestRow.client_name || "Dorameira", 
       phoneNumber: bestRow.phone_number,
       purchaseDate: bestRow.purchase_date, 
       durationMonths: bestRow.duration_months,
@@ -372,230 +271,63 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
       gameProgress: gameProgress,
       themeColor: bestRow.theme_color,
       backgroundImage: bestRow.background_image,
-      profileImage: bestRow.profile_image
+      profileImage: bestRow.profile_image,
+      manualCredentials: manualCreds
     };
 
     return { user: appUser, error: null };
 };
 
-export const getUserDoramasFromDB = async (phoneNumber: string): Promise<{ watching: Dorama[], favorites: Dorama[], completed: Dorama[] }> => {
-    const localData = getLocalUserData(phoneNumber);
-    
+/**
+ * REFRESH USER PROFILE (Atualizar Dados)
+ * Recarrega os dados do usuário, aplicando correções de senha se necessário, sem exigir login.
+ */
+export const refreshUserProfile = async (phoneNumber: string): Promise<{ user: User | null, error: string | null }> => {
     try {
         const { data, error } = await supabase
-            .from('user_doramas')
+            .from('clients')
             .select('*')
             .eq('phone_number', phoneNumber);
 
-        if (error) {
-            console.error("Erro Supabase ao buscar doramas:", error);
-            throw error; // Força cair no catch para usar o fallback
+        if (error || !data || data.length === 0) {
+            return { user: null, error: 'Erro ao sincronizar. Verifique a conexão.' };
         }
 
-        if (!data || data.length === 0) {
-            // Se o banco retornar vazio, mas temos dados locais, assumimos que pode ser falha ou primeira carga
-            // Priorizamos dados locais se existirem para evitar zerar a lista do usuário
-            if (localData.watching.length > 0 || localData.favorites.length > 0 || localData.completed.length > 0) {
-                return localData;
-            }
-            return { watching: [], favorites: [], completed: [] };
-        }
-
-        const watching = data.filter((d: any) => d.list_type === 'watching').map(mapDoramaRow);
-        const favorites = data.filter((d: any) => d.list_type === 'favorites').map(mapDoramaRow);
-        const completed = data.filter((d: any) => d.list_type === 'completed').map(mapDoramaRow);
-
-        return { watching, favorites, completed };
+        const allRecords = data as unknown as ClientDBRow[];
+        return processUserLogin(allRecords);
     } catch (e) {
-        // FALLBACK: Em caso de erro de conexão, retorna o cache local para não mostrar tela vazia
-        console.warn("Usando backup local de doramas devido a erro de conexão.");
-        return localData;
+        return { user: null, error: 'Erro de conexão.' };
     }
 };
 
-const mapDoramaRow = (row: any): Dorama => ({
-    id: row.id,
-    title: row.title,
-    genre: row.genre,
-    thumbnail: row.thumbnail,
-    status: row.status,
-    episodesWatched: row.episodes_watched,
-    totalEpisodes: row.total_episodes,
-    season: row.season,
-    rating: row.rating
-});
-
-export const addDoramaToDB = async (phoneNumber: string, listType: string, dorama: Dorama): Promise<Dorama | null> => {
-    try {
-        // Salva localmente primeiro (Optimistic + Backup)
-        addLocalDorama(phoneNumber, listType as any, dorama);
-
-        const { data, error } = await supabase
-            .from('user_doramas')
-            .insert([{
-                phone_number: phoneNumber,
-                title: dorama.title,
-                genre: dorama.genre,
-                thumbnail: dorama.thumbnail,
-                status: dorama.status,
-                episodes_watched: dorama.episodesWatched,
-                total_episodes: dorama.totalEpisodes,
-                season: dorama.season,
-                rating: dorama.rating,
-                list_type: listType
-            }])
-            .select()
-            .single();
-
-        if (error || !data) return dorama; // Retorna o objeto original se DB falhar, para manter na UI
-        return mapDoramaRow(data);
-    } catch (e) {
-        return dorama; // Fallback
-    }
+/**
+ * DEPRECATED BUT KEPT FOR MOCK: Login antigo direto (usado apenas se o DB falhar ou para o mock)
+ */
+export const loginUserByPhone = async (lastFourDigits: string): Promise<{ user: User | null, error: string | null }> => {
+  const found = MOCK_DB_CLIENTS.filter(c => c.phone_number.endsWith(lastFourDigits) && !c.deleted);
+  if (found.length > 0) return processUserLogin(found);
+  return { user: null, error: 'Cliente não encontrado.' };
 };
 
-export const updateDoramaInDB = async (dorama: Dorama): Promise<boolean> => {
-    try {
-        if (dorama.id.startsWith('temp-')) return true; // Ignora temps no DB
-        
-        const { error } = await supabase
-            .from('user_doramas')
-            .update({
-                episodes_watched: dorama.episodesWatched,
-                season: dorama.season,
-                rating: dorama.rating,
-                title: dorama.title,
-                total_episodes: dorama.totalEpisodes
-            })
-            .eq('id', dorama.id);
+// --- ADMIN AUTH (REAL via Supabase) ---
+export const verifyAdminLogin = async (login: string, pass: string): Promise<boolean> => {
+  try {
+    const { data, error } = await supabase
+      .from('admin_users')
+      .select('*')
+      .eq('username', login)
+      .limit(1);
 
-        return !error;
-    } catch (e) {
-        return false;
+    if (error || !data || data.length === 0) {
+      return false;
     }
-};
 
-export const removeDoramaFromDB = async (doramaId: string): Promise<boolean> => {
-    try {
-        if (doramaId.startsWith('temp-')) return true;
-        const { error } = await supabase.from('user_doramas').delete().eq('id', doramaId);
-        return !error;
-    } catch (e) {
-        return false;
-    }
-};
-
-export const saveGameProgress = async (phoneNumber: string, gameId: string, progressData: any) => {
-    try {
-        const { data: clientData } = await supabase
-            .from('clients')
-            .select('game_progress')
-            .eq('phone_number', phoneNumber)
-            .limit(1)
-            .single();
-            
-        const currentProgress = clientData?.game_progress || {};
-        const newProgress = { ...currentProgress, [gameId]: progressData };
-
-        await supabase
-            .from('clients')
-            .update({ game_progress: newProgress })
-            .eq('phone_number', phoneNumber);
-    } catch (e) {
-        console.error('Error saving game', e);
-    }
-};
-
-export const updateClientName = async (phoneNumber: string, newName: string): Promise<boolean> => {
-    try {
-        const { error } = await supabase
-            .from('clients')
-            .update({ client_name: newName })
-            .eq('phone_number', phoneNumber);
-        return !error;
-    } catch (e) {
-        return true; // Assume sucesso local se DB falhar
-    }
-};
-
-export const updateClientPreferences = async (phoneNumber: string, preferences: { themeColor?: string, backgroundImage?: string, profileImage?: string }): Promise<boolean> => {
-    try {
-        const updatePayload: any = {};
-        if (preferences.themeColor !== undefined) updatePayload.theme_color = preferences.themeColor;
-        if (preferences.backgroundImage !== undefined) updatePayload.background_image = preferences.backgroundImage;
-        if (preferences.profileImage !== undefined) updatePayload.profile_image = preferences.profileImage;
-
-        if (Object.keys(updatePayload).length === 0) return true;
-
-        const { error } = await supabase
-            .from('clients')
-            .update(updatePayload)
-            .eq('phone_number', phoneNumber);
-            
-        return !error;
-    } catch (e) {
-        return false;
-    }
-};
-
-export const getSystemConfig = async () => {
-    try {
-        const { data } = await supabase
-            .from('app_credentials')
-            .select('*')
-            .eq('service', 'SYSTEM_CONFIG')
-            .single();
-            
-        if (data && data.password) {
-            return JSON.parse(data.password);
-        }
-        return null;
-    } catch (e) {
-        return null;
-    }
-};
-
-export interface SystemConfig {
-    bannerText: string;
-    bannerType: 'info' | 'warning' | 'error' | 'success';
-    bannerActive: boolean;
-    serviceStatus: Record<string, 'ok' | 'issues' | 'down'>;
-}
-
-export const saveSystemConfig = async (config: SystemConfig): Promise<boolean> => {
-    try {
-        const configString = JSON.stringify(config);
-        
-        const { data } = await supabase.from('app_credentials').select('id').eq('service', 'SYSTEM_CONFIG');
-        
-        if (data && data.length > 0) {
-            await supabase.from('app_credentials')
-                .update({ password: configString })
-                .eq('service', 'SYSTEM_CONFIG');
-        } else {
-            await supabase.from('app_credentials')
-                .insert([{
-                    service: 'SYSTEM_CONFIG',
-                    email: 'config@system',
-                    password: configString,
-                    published_at: new Date().toISOString(),
-                    is_visible: false
-                }]);
-        }
-        return true;
-    } catch (e) {
-        return false;
-    }
-};
-
-// --- BACKUP ROBUSTO PARA LOCALSTORAGE ---
-export const syncDoramaBackup = async (phoneNumber: string, data: { watching: Dorama[], favorites: Dorama[], completed: Dorama[] }) => {
-    try {
-        if (!phoneNumber) return;
-        localStorage.setItem(`dorama_user_${phoneNumber}`, JSON.stringify(data));
-    } catch (e) {
-        console.error("Erro ao salvar backup local:", e);
-    }
+    const admin = data[0] as AdminUserDBRow;
+    return admin.password === pass;
+  } catch (e) {
+    console.error('Erro ao verificar admin:', e);
+    return false;
+  }
 };
 
 export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<boolean> => {
@@ -668,54 +400,135 @@ export const createDemoClient = async (): Promise<boolean> => {
     }
 };
 
-export const loginUserByPhone = async (lastFourDigits: string): Promise<{ user: User | null, error: string | null }> => {
-  const found = MOCK_DB_CLIENTS.filter(c => c.phone_number.endsWith(lastFourDigits) && !c.deleted);
-  if (found.length > 0) return processUserLogin(found);
-  return { user: null, error: 'Cliente não encontrado.' };
+export const updateClientName = async (phoneNumber: string, newName: string): Promise<boolean> => {
+    try {
+        const { error } = await supabase
+            .from('clients')
+            .update({ client_name: newName })
+            .eq('phone_number', phoneNumber);
+        return !error;
+    } catch (e) {
+        return true; 
+    }
 };
 
-export const verifyAdminLogin = async (login: string, pass: string): Promise<boolean> => {
-  // Override para senha mestre solicitada
-  if (pass === '1202') return true;
+export const updateClientPreferences = async (phoneNumber: string, preferences: { themeColor?: string, backgroundImage?: string, profileImage?: string }): Promise<boolean> => {
+    try {
+        const updatePayload: any = {};
+        if (preferences.themeColor !== undefined) updatePayload.theme_color = preferences.themeColor;
+        if (preferences.backgroundImage !== undefined) updatePayload.background_image = preferences.backgroundImage;
+        if (preferences.profileImage !== undefined) updatePayload.profile_image = preferences.profileImage;
 
-  try {
-    const { data, error } = await supabase
-      .from('admin_users')
-      .select('*')
-      .eq('username', login)
-      .limit(1);
+        if (Object.keys(updatePayload).length === 0) return true;
 
-    if (error || !data || data.length === 0) {
-      return false;
+        const { error } = await supabase
+            .from('clients')
+            .update(updatePayload)
+            .eq('phone_number', phoneNumber);
+            
+        return !error;
+    } catch (e) {
+        return false;
     }
+};
 
-    const admin = data[0] as AdminUserDBRow;
-    return admin.password === pass;
-  } catch (e) {
-    console.error('Erro ao verificar admin:', e);
-    return false;
-  }
+export const updateLastActive = async (phoneNumber: string): Promise<void> => {
+    try {
+        await supabase
+            .from('clients')
+            .update({ last_active_at: new Date().toISOString() })
+            .eq('phone_number', phoneNumber);
+    } catch (e) {
+        console.error('Erro ao atualizar status online:', e);
+    }
+};
+
+export const saveGameProgress = async (phoneNumber: string, gameId: string, progressData: any) => {
+    try {
+        const { data: clientData } = await supabase
+            .from('clients')
+            .select('game_progress')
+            .eq('phone_number', phoneNumber)
+            .limit(1)
+            .single();
+            
+        const currentProgress = clientData?.game_progress || {};
+        const newProgress = { ...currentProgress, [gameId]: progressData };
+
+        await supabase
+            .from('clients')
+            .update({ game_progress: newProgress })
+            .eq('phone_number', phoneNumber);
+    } catch (e) {
+        console.error('Error saving game', e);
+    }
+};
+
+export const getSystemConfig = async () => {
+    try {
+        const { data } = await supabase
+            .from('app_credentials')
+            .select('*')
+            .eq('service', 'SYSTEM_CONFIG')
+            .single();
+            
+        if (data && data.password) {
+            return JSON.parse(data.password);
+        }
+        return null;
+    } catch (e) {
+        return null;
+    }
+};
+
+export interface SystemConfig {
+    bannerText: string;
+    bannerType: 'info' | 'warning' | 'error' | 'success';
+    bannerActive: boolean;
+    serviceStatus: Record<string, 'ok' | 'issues' | 'down'>;
+}
+
+export const saveSystemConfig = async (config: SystemConfig): Promise<boolean> => {
+    try {
+        const configString = JSON.stringify(config);
+        
+        const { data } = await supabase.from('app_credentials').select('id').eq('service', 'SYSTEM_CONFIG');
+        
+        if (data && data.length > 0) {
+            await supabase.from('app_credentials')
+                .update({ password: configString })
+                .eq('service', 'SYSTEM_CONFIG');
+        } else {
+            await supabase.from('app_credentials')
+                .insert([{
+                    service: 'SYSTEM_CONFIG',
+                    email: 'config@system',
+                    password: configString,
+                    published_at: new Date().toISOString(),
+                    is_visible: false
+                }]);
+        }
+        return true;
+    } catch (e) {
+        return false;
+    }
 };
 
 export const getRotationalTestPassword = (): string => {
     const now = new Date();
-    // Use UTC to ensure consistency across timezones for admin/user coordination
     const year = now.getUTCFullYear();
     const month = now.getUTCMonth();
     const day = now.getUTCDate();
     const hour = now.getUTCHours();
-    const block = Math.floor(hour / 3); // Muda a cada 3 horas
+    const block = Math.floor(hour / 3); 
 
-    // Seed generation
     const seed = year * 10000 + month * 100 + day * 10 + block;
     
-    // LCG parameters for simple deterministic random
     const a = 1664525;
     const c = 1013904223;
     const m = 4294967296;
     let x = seed;
     
-    // Warm up
     x = (a * x + c) % m;
     x = (a * x + c) % m;
 
@@ -728,4 +541,117 @@ export const getRotationalTestPassword = (): string => {
     }
     
     return password;
+};
+
+// --- BACKUP ROBUSTO PARA LOCALSTORAGE ---
+export const syncDoramaBackup = async (phoneNumber: string, data: { watching: Dorama[], favorites: Dorama[], completed: Dorama[] }) => {
+    try {
+        if (!phoneNumber) return;
+        localStorage.setItem(`dorama_user_${phoneNumber}`, JSON.stringify(data));
+    } catch (e) {
+        console.error("Erro ao salvar backup local:", e);
+    }
+};
+
+export const getUserDoramasFromDB = async (phoneNumber: string): Promise<{ watching: Dorama[], favorites: Dorama[], completed: Dorama[] }> => {
+    const localData = getLocalUserData(phoneNumber);
+    
+    try {
+        const { data, error } = await supabase
+            .from('user_doramas')
+            .select('*')
+            .eq('phone_number', phoneNumber);
+
+        if (error) {
+            console.error("Erro Supabase ao buscar doramas:", error);
+            throw error; 
+        }
+
+        if (!data || data.length === 0) {
+            if (localData.watching.length > 0 || localData.favorites.length > 0 || localData.completed.length > 0) {
+                return localData;
+            }
+            return { watching: [], favorites: [], completed: [] };
+        }
+
+        const watching = data.filter((d: any) => d.list_type === 'watching').map(mapDoramaRow);
+        const favorites = data.filter((d: any) => d.list_type === 'favorites').map(mapDoramaRow);
+        const completed = data.filter((d: any) => d.list_type === 'completed').map(mapDoramaRow);
+
+        return { watching, favorites, completed };
+    } catch (e) {
+        console.warn("Usando backup local de doramas devido a erro de conexão.");
+        return localData;
+    }
+};
+
+const mapDoramaRow = (row: any): Dorama => ({
+    id: row.id,
+    title: row.title,
+    genre: row.genre,
+    thumbnail: row.thumbnail,
+    status: row.status,
+    episodesWatched: row.episodes_watched,
+    totalEpisodes: row.total_episodes,
+    season: row.season,
+    rating: row.rating
+});
+
+export const addDoramaToDB = async (phoneNumber: string, listType: string, dorama: Dorama): Promise<Dorama | null> => {
+    try {
+        addLocalDorama(phoneNumber, listType as any, dorama);
+
+        const { data, error } = await supabase
+            .from('user_doramas')
+            .insert([{
+                phone_number: phoneNumber,
+                title: dorama.title,
+                genre: dorama.genre,
+                thumbnail: dorama.thumbnail,
+                status: dorama.status,
+                episodes_watched: dorama.episodesWatched,
+                total_episodes: dorama.totalEpisodes,
+                season: dorama.season,
+                rating: dorama.rating,
+                list_type: listType
+            }])
+            .select()
+            .single();
+
+        if (error || !data) return dorama;
+        return mapDoramaRow(data);
+    } catch (e) {
+        return dorama; 
+    }
+};
+
+export const updateDoramaInDB = async (dorama: Dorama): Promise<boolean> => {
+    try {
+        if (dorama.id.startsWith('temp-')) return true; 
+        
+        const { error } = await supabase
+            .from('user_doramas')
+            .update({
+                episodes_watched: dorama.episodesWatched,
+                season: dorama.season,
+                rating: dorama.rating,
+                title: dorama.title,
+                total_episodes: dorama.totalEpisodes
+            })
+            .eq('id', dorama.id);
+
+        return !error;
+    } catch (e) {
+        return false;
+    }
+};
+
+export const removeDoramaFromDB = async (doramaId: string): Promise<boolean> => {
+    try {
+        if (doramaId.startsWith('temp-')) return true;
+        const { error } = await supabase.from('user_doramas').delete().eq('id', doramaId);
+        return !error;
+    } catch (e) {
+        return false;
+    }
 };

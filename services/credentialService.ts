@@ -41,7 +41,7 @@ export const fetchCredentials = async (): Promise<AppCredential[]> => {
   }
 };
 
-export const saveCredential = async (cred: AppCredential): Promise<void> => {
+export const saveCredential = async (cred: AppCredential): Promise<string | null> => {
   try {
     const dbRow = {
       service: cred.service,
@@ -52,19 +52,28 @@ export const saveCredential = async (cred: AppCredential): Promise<void> => {
     };
 
     if (cred.id && cred.id.length > 20) {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('app_credentials')
         .update(dbRow)
-        .eq('id', cred.id);
-        if (error) throw error;
+        .eq('id', cred.id)
+        .select()
+        .single();
+        
+      if (error) throw error;
+      return data?.id || null;
     } else {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('app_credentials')
-        .insert([dbRow]);
-        if (error) throw error;
+        .insert([dbRow])
+        .select()
+        .single();
+        
+      if (error) throw error;
+      return data?.id || null;
     }
   } catch (error) {
     console.error('Erro ao salvar credencial:', error);
+    return null;
   }
 };
 
@@ -96,12 +105,9 @@ export const getAssignedCredential = async (user: User, serviceName: string, pre
           return { credential: null, alert: "Este app não está no teste grátis.", daysActive: 0 };
       }
 
-      // Filtra credenciais disponíveis para este serviço
-      // FIX: Removida restrição excessiva. Se tiver credencial visível no banco, o teste usa.
       const testPool = credentialsList.filter(c => c.isVisible && c.service.toLowerCase().includes(serviceName.toLowerCase()));
       
       if (testPool.length === 0) {
-          // Se não achar nada, tenta buscar qualquer coisa que contenha parte do nome (fallback)
           const fallbackPool = credentialsList.filter(c => c.service.toLowerCase().includes(serviceName.split(' ')[0].toLowerCase()));
           if (fallbackPool.length > 0) {
               const randomFallback = Math.floor(Math.random() * fallbackPool.length);
@@ -110,14 +116,26 @@ export const getAssignedCredential = async (user: User, serviceName: string, pre
           return { credential: null, alert: "Sem contas disponíveis no momento.", daysActive: 0 };
       }
       
-      // Seleção Aleatória Real
       const randomIndex = Math.floor(Math.random() * testPool.length);
       return { credential: testPool[randomIndex], alert: "Conta de Teste (Rotativa 1h)", daysActive: 1 };
   }
 
-  // --- LÓGICA PARA USUÁRIOS REAIS ---
-  // MATCHING ROBUSTO: Checa se a credencial contem o serviço OU se o serviço contém a credencial
-  // Ex: "Viki Pass" encontra "Viki" (DB) e "Viki" (User) encontra "Viki Pass" (DB)
+  // 1.5. CHECK MANUAL ASSIGNMENT (PRIORITY)
+  if (user.manualCredentials) {
+      const cleanService = serviceName.split('|')[0].trim();
+      // Try to find exact match key or partial match
+      const assignedId = user.manualCredentials[cleanService] || 
+                         Object.entries(user.manualCredentials).find(([key]) => cleanService.toLowerCase().includes(key.toLowerCase()))?.[1];
+
+      if (assignedId) {
+          const manualCred = credentialsList.find(c => c.id === assignedId);
+          if (manualCred) {
+              return calculateAlerts(manualCred, serviceName);
+          }
+      }
+  }
+
+  // --- LÓGICA AUTOMÁTICA PARA USUÁRIOS REAIS ---
   const allCreds = credentialsList
     .filter(c => {
         if (!c.isVisible) return false;
@@ -130,7 +148,6 @@ export const getAssignedCredential = async (user: User, serviceName: string, pre
   if (allCreds.length === 0) return { credential: null, alert: null, daysActive: 0 };
 
   // 2. Busca clientes e calcula posição (Distribuição)
-  // OTIMIZAÇÃO: Usa a lista pré-carregada se existir
   const allClients = preloadedClients || await getAllClients();
   const activeClients = allClients.filter((c: any) => !c.deleted);
   
@@ -151,7 +168,6 @@ export const getAssignedCredential = async (user: User, serviceName: string, pre
   const userIndex = clientsWithService.findIndex(c => c.phone_number.replace(/\D/g, '') === userPhoneClean);
 
   if (userIndex === -1) {
-    // Se não achou na lista (ex: Admin logado ou falha de RLS), mostra a primeira credencial disponível
     const firstCred = allCreds[0];
     return calculateAlerts(firstCred, serviceName);
   }
@@ -173,14 +189,10 @@ export const getAssignedCredential = async (user: User, serviceName: string, pre
 
 // FUNÇÃO AUXILIAR DE CÁLCULO DE DIAS (CALENDAR DAYS STRICT)
 const calculateAlerts = (cred: AppCredential, serviceName: string) => {
-  // 5. CÁLCULO DE DIAS (CALENDAR MODE - UTC BASED)
-  // Força o cálculo em UTC para evitar problemas de fuso horário local do navegador
-  
   const dateCreated = new Date(cred.publishedAt);
   const today = new Date();
 
   // Zera as horas para comparar apenas os dias do calendário
-  // Usa UTC para consistência total
   const createdUTC = Date.UTC(dateCreated.getFullYear(), dateCreated.getMonth(), dateCreated.getDate());
   const todayUTC = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
   
@@ -192,9 +204,6 @@ const calculateAlerts = (cred: AppCredential, serviceName: string) => {
   const sName = serviceName.toLowerCase();
 
   // --- REGRAS DE NOTIFICAÇÃO ---
-  
-  // Viki (Ciclo ~14 dias)
-  // Exemplo: Criado 01/11. Hoje 13/11. DaysPassed = 13.
   if (sName.includes('viki')) {
       if (daysPassed >= 14) {
           alertMsg = "⚠️ Conta Expirada (14 Dias). Aguarde nova!";
@@ -204,7 +213,6 @@ const calculateAlerts = (cred: AppCredential, serviceName: string) => {
           alertMsg = `⚠️ Ciclo final (${daysPassed}/14 dias). Nova conta em breve.`;
       }
   } 
-  // Kocowa (Ciclo ~30 dias)
   else if (sName.includes('kocowa')) {
       if (daysPassed >= 30) {
           alertMsg = "⚠️ Conta Expirada. Aguarde nova!";
@@ -212,13 +220,11 @@ const calculateAlerts = (cred: AppCredential, serviceName: string) => {
           alertMsg = "⚠️ Atenção: A senha muda em breve!";
       }
   }
-  // IQIYI (Ciclo ~30 dias)
   else if (sName.includes('iqiyi')) {
       if (daysPassed >= 29) {
           alertMsg = "⚠️ Atualização de conta iminente.";
       }
   }
-  // Genérico (Segurança para qualquer app esquecido > 35 dias)
   else if (daysPassed >= 35) {
       alertMsg = "⚠️ Login muito antigo. Verifique se funciona.";
   }

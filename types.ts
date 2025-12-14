@@ -15,6 +15,7 @@ export interface ClientDBRow {
   client_password?: string; // Nova coluna para senha do cliente
   game_progress?: any; // Nova coluna JSONB para salvar progresso dos jogos
   last_active_at?: string; // Nova coluna para rastrear status online
+  manual_credentials?: Record<string, string>; // Mapeamento: 'Nome do Serviço' -> 'ID da Credencial'
   
   // Personalization (Stored in JSONB 'preferences' or distinct columns if migrated)
   // For this version we will map strictly to UI state, assuming persisted via localStorage or future DB update
@@ -119,6 +120,9 @@ export interface User {
   themeColor?: string;
   backgroundImage?: string;
   profileImage?: string;
+  
+  // Admin Assigned Credentials
+  manualCredentials?: Record<string, string>;
 }
 
 export interface Message {
